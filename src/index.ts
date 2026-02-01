@@ -1,8 +1,9 @@
 import "dotenv/config";
 import cron from "node-cron";
-import { fetchBacktestData } from "./fetcher";
-import { processSignals } from "./processor";
+import { scrapePortfolioData, closeBrowser } from "./scraper";
+import { processedSignalsFromActions, scaleActionsToPortfolioSize } from "./processor";
 import { sendNotification } from "./notifier";
+import { executeTradesFromActions } from "./trader";
 import {
   readState,
   writeState,
@@ -16,33 +17,53 @@ async function runCheck(): Promise<void> {
   try {
     console.log("Starting daily check...");
 
-    const data = await fetchBacktestData();
-    console.log("Data fetched successfully");
+    const scrapedData = await scrapePortfolioData();
+    console.log("Portfolio data scraped successfully");
 
-    const processedSignals = processSignals(data);
-    if (!processedSignals) {
-      console.warn("No signals to process");
+    if (!scrapedData.actions || scrapedData.actions.length === 0) {
+      console.warn("No actions found in scraped data");
       return;
     }
 
-    console.log(
-      `Found ${processedSignals.enterSignals.length} ENTER signals, ${processedSignals.keepSignals.length} KEEP signals, and ${processedSignals.exitSignals.length} EXIT signals`
-    );
+    console.log(`Found ${scrapedData.actions.length} actions for date ${scrapedData.date}`);
 
     const state = await readState();
-    if (!shouldProcess(processedSignals.date, state)) {
+    if (!shouldProcess(scrapedData.date, state)) {
       console.log(
-        `Already processed date ${processedSignals.date}, skipping notification`
+        `Already processed date ${scrapedData.date}, skipping`
       );
       return;
     }
 
-    console.log(`Processing new date: ${processedSignals.date}`);
+    console.log(`Processing new date: ${scrapedData.date}`);
+
+    const PORTFOLIO_SIZE = parseInt(process.env.PORTFOLIO_SIZE || "10000", 10);
+    const scaledActions = scaleActionsToPortfolioSize(scrapedData.actions, PORTFOLIO_SIZE);
+    
+    const totalOriginalValue = scrapedData.actions
+      .filter((a) => a.action === "BUY")
+      .reduce((sum, a) => sum + a.shares * a.price, 0);
+    const totalScaledValue = scaledActions
+      .filter((a) => a.action === "BUY")
+      .reduce((sum, a) => sum + a.shares * a.price, 0);
+    
+    if (totalOriginalValue > 0) {
+      console.log(
+        `Scaling actions: Original BUY value: $${totalOriginalValue.toFixed(2)} → Scaled to $${totalScaledValue.toFixed(2)} (target: $${PORTFOLIO_SIZE})`
+      );
+    }
+
+    const tradeSummary = await executeTradesFromActions(scaledActions);
+    console.log(
+      `Trade execution: ${tradeSummary.successful.length} successful, ${tradeSummary.failed.length} failed, ${tradeSummary.skipped.length} skipped`
+    );
+
+    const processedSignals = processedSignalsFromActions(scrapedData);
     await sendNotification(processedSignals);
 
-    const timestamp = new Date(processedSignals.date).getTime();
-    await writeState(processedSignals.date, timestamp);
-    console.log(`State updated for date: ${processedSignals.date}`);
+    const timestamp = new Date(scrapedData.date).getTime();
+    await writeState(scrapedData.date, timestamp);
+    console.log(`State updated for date: ${scrapedData.date}`);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error("Error in daily check:", errorMessage);
@@ -74,8 +95,15 @@ async function main(): Promise<void> {
 }
 
 if (require.main === module) {
-  main().catch((error) => {
+  const cleanup = async () => {
+    await closeBrowser();
+    process.exit(0);
+  };
+  process.on("SIGINT", cleanup);
+  process.on("SIGTERM", cleanup);
+  main().catch(async (error) => {
     console.error("Fatal error:", error);
+    await closeBrowser();
     process.exit(1);
   });
 }

@@ -32,6 +32,18 @@ export interface Trade {
   daily_change: number;
 }
 
+export interface PortfolioAction {
+  symbol: string;
+  action: "BUY" | "SELL";
+  shares: number;
+  price: number;
+}
+
+export interface ScrapedPortfolioData {
+  date: string;
+  actions: PortfolioAction[];
+}
+
 export interface Snapshot {
   date: string;
   holdings: Holding[];
@@ -62,3 +74,18 @@ export interface ProcessedSignals {
   date: string;
 }
 
+export interface TradeExecutionResult {
+  symbol: string;
+  action: "BUY" | "SELL";
+  shares: number;
+  price: number;
+  success: boolean;
+  error?: string;
+  orderId?: string;
+}
+
+export interface TradeExecutionSummary {
+  successful: TradeExecutionResult[];
+  failed: TradeExecutionResult[];
+  skipped: Array<{ symbol: string; reason: string }>;
+}

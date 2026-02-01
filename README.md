@@ -1,12 +1,14 @@
 # EquiAlgo Stock Alert Service
 
-A Node.js/TypeScript service that monitors the EquiAlgo momentum backtest API and sends daily notifications via ntfy for stock entry and exit signals.
+A Node.js/TypeScript service that scrapes the SystemTrader Gemini Portfolio page for today's trading actions, automatically executes trades via Charles Schwab API, and sends daily notifications via ntfy for stock entry and exit signals.
 
 ## Features
 
-- Fetches data from EquiAlgo momentum backtest API once per day
+- Scrapes SystemTrader Gemini Portfolio page using Puppeteer to extract "Today's Actions" table
 - Extracts ENTER and EXIT signals from the latest snapshot
 - Calculates share allocations for a $10,000 portfolio with equal distribution
+- Automatically places BUY orders for ENTER signals and SELL orders for EXIT signals via Charles Schwab API
+- Verifies existing positions before placing orders to avoid duplicates
 - Sends detailed notifications via ntfy
 - Tracks processed dates to avoid duplicate notifications
 - Runs continuously with scheduled daily execution using node-cron
@@ -50,12 +52,21 @@ Configuration is done via environment variables. Create a `.env` file in the pro
 | `CRON_SCHEDULE` | `0 9 * * *` | Cron schedule for daily execution (9:00 AM daily) |
 | `NTFY_TOPIC` | `fcpauldiaz_notifications` | Ntfy topic for notifications |
 | `NTFY_BASE_URL` | `https://ntfy.sh` | Base URL for ntfy service |
-| `PORTFOLIO_SIZE` | `10000` | Portfolio size in dollars for share calculations |
-| `API_URL` | `https://www.equialgo.com/data/backtest/momentum_backtest.json` | EquiAlgo API endpoint |
-| `MAX_RETRIES` | `3` | Maximum number of retry attempts for API calls |
+| `PORTFOLIO_SIZE` | `10000` | Portfolio size in dollars for share calculations (legacy, not used with scraper) |
+| `PORTFOLIO_URL` | `https://www.systemtrader.co/gemini/portfolio` | SystemTrader Gemini Portfolio page URL to scrape |
+| `MAX_RETRIES` | `3` | Maximum number of retry attempts for scraping |
 | `RETRY_DELAY_MS` | `1000` | Delay in milliseconds between retry attempts |
+| `PUPPETEER_HEADLESS` | `true` | Run Puppeteer in headless mode (set to `false` to see browser) |
 | `DATABASE_URL` | *Required* | Turso/LibSQL database URL |
 | `DATABASE_AUTH_TOKEN` | *Required* | Turso/LibSQL authentication token |
+| `SCHWAB_CLIENT_ID` | *Required for trading* | Charles Schwab OAuth client ID |
+| `SCHWAB_CLIENT_SECRET` | *Required for trading* | Charles Schwab OAuth client secret |
+| `SCHWAB_REDIRECT_URI` | *Required for trading* | Charles Schwab OAuth redirect URI |
+| `SCHWAB_ACCOUNT_NUMBER` | *Required for trading* | Charles Schwab account number/hash |
+| `SCHWAB_ACCESS_TOKEN` | *Optional* | Schwab access token (if using stored tokens) |
+| `SCHWAB_REFRESH_TOKEN` | *Optional* | Schwab refresh token (if using stored tokens) |
+| `SCHWAB_ORDER_TYPE` | `MARKET` | Order type: `MARKET` or `LIMIT` |
+| `SCHWAB_ENABLE_TRADING` | `false` | Enable/disable automatic trading (safety flag) |
 
 ### Example .env File
 
@@ -72,8 +83,8 @@ NTFY_BASE_URL=https://ntfy.sh
 # Portfolio configuration
 PORTFOLIO_SIZE=10000
 
-# API configuration
-API_URL=https://www.equialgo.com/data/backtest/momentum_backtest.json
+# Scraper configuration
+PORTFOLIO_URL=https://www.systemtrader.co/gemini/portfolio
 
 # Retry configuration
 MAX_RETRIES=3
@@ -82,6 +93,14 @@ RETRY_DELAY_MS=1000
 # Database configuration (Turso/LibSQL)
 DATABASE_URL=libsql://equialgo-fcpauldiaz.aws-us-east-1.turso.io
 DATABASE_AUTH_TOKEN=your_auth_token_here
+
+# Schwab API configuration (for automatic trading)
+SCHWAB_CLIENT_ID=your_schwab_client_id
+SCHWAB_CLIENT_SECRET=your_schwab_client_secret
+SCHWAB_REDIRECT_URI=https://example.com/callback
+SCHWAB_ACCOUNT_NUMBER=your_account_hash
+SCHWAB_ORDER_TYPE=MARKET
+SCHWAB_ENABLE_TRADING=false
 ```
 
 ### Cron Schedule Examples
@@ -134,12 +153,38 @@ pm2 startup
 
 ## How It Works
 
-1. **Fetch**: Retrieves JSON data from `https://www.equialgo.com/data/backtest/momentum_backtest.json`
-2. **Process**: Extracts the last snapshot and filters signals for ENTER/EXIT actions
-3. **Calculate**: For ENTER signals, calculates shares for a $10k portfolio with equal allocation
+1. **Scrape**: Uses Puppeteer to load the SystemTrader Gemini Portfolio page (configurable via `PORTFOLIO_URL`) and extracts the "Today's Actions" table
+2. **Parse**: Extracts Symbol, Action (BUY/SELL/INCREASE/DECREASE), Shares (from Change column), and Open Price from each row
+3. **Normalize**: Maps INCREASE → BUY and DECREASE → SELL, extracts absolute share counts from change values
 4. **Check State**: Verifies if the date has already been processed
-5. **Notify**: Sends a detailed notification via ntfy if it's a new date
-6. **Update State**: Records the processed date to prevent duplicates
+5. **Execute Trades**: If trading is enabled, places BUY orders for BUY actions and SELL orders for SELL actions via Charles Schwab API using the exact shares and prices from the scraped data
+6. **Notify**: Sends a detailed notification via ntfy if it's a new date
+7. **Update State**: Records the processed date to prevent duplicates
+
+## Schwab API Setup
+
+To enable automatic trading, you need to:
+
+1. **Create a Schwab Developer Account**: Register at [Schwab Developer Portal](https://developer.schwab.com/)
+2. **Create an OAuth Application**: Get your `client_id`, `client_secret`, and configure a `redirect_uri`
+3. **Obtain Account Number**: Get your Schwab account number/hash from your account settings
+4. **OAuth Flow**: Complete the OAuth flow to obtain `access_token` and `refresh_token`
+5. **Configure Environment Variables**: Set all required Schwab environment variables (see Configuration section)
+6. **Enable Trading**: Set `SCHWAB_ENABLE_TRADING=true` to activate automatic trading
+
+### Important Security Notes
+
+- **Trading is disabled by default**: Set `SCHWAB_ENABLE_TRADING=true` only when ready to execute real trades
+- **Token Expiration**: Schwab refresh tokens expire after 7 days. You'll need to re-authenticate periodically
+- **Position Verification**: The system automatically verifies existing positions before placing orders to avoid duplicate buys or selling non-existent positions
+- **Error Handling**: Individual trade failures are logged but don't stop processing of other trades
+
+### Order Types
+
+- **MARKET**: Orders execute immediately at current market price (default)
+- **LIMIT**: Orders execute only at or better than specified price (requires price parameter)
+
+Set `SCHWAB_ORDER_TYPE` to `MARKET` or `LIMIT` to control order behavior.
 
 ## Notification Format
 
@@ -190,8 +235,10 @@ The database is automatically initialized on first run, creating a `state` table
 equialgo-alerts/
 ├── src/
 │   ├── index.ts          # Main service entry point
-│   ├── fetcher.ts        # API fetching logic
-│   ├── processor.ts      # Signal extraction and filtering
+│   ├── scraper.ts        # Puppeteer-based portfolio page scraping
+│   ├── fetcher.ts        # Legacy API fetching logic (deprecated)
+│   ├── processor.ts      # Signal extraction and action-to-signal conversion
+│   ├── trader.ts         # Schwab API trading integration
 │   ├── notifier.ts       # ntfy notification sending
 │   ├── state.ts          # State tracking
 │   └── types.ts          # TypeScript type definitions
@@ -205,9 +252,10 @@ equialgo-alerts/
 ## Dependencies
 
 - `typescript` - TypeScript compiler
-- `node-fetch` - HTTP client for API calls
+- `puppeteer` - Headless browser for web scraping
 - `node-cron` - Daily scheduling
 - `@libsql/client` - Turso/LibSQL database client
+- `@sudowealth/schwab-api` - Charles Schwab API client with OAuth support
 - `dotenv` - Environment variable management
 - `@types/node` - Node.js type definitions
 

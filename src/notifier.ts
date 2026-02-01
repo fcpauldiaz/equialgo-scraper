@@ -1,4 +1,3 @@
-import fetch from "node-fetch";
 import { ProcessedSignals } from "./types";
 
 const NTFY_TOPIC = process.env.NTFY_TOPIC || "fcpauldiaz_notifications";
