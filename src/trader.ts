@@ -1,17 +1,36 @@
 import {
-  createSchwabAuth,
-  createApiClient,
-  SchwabAuthError,
-  SchwabApiError,
-  type SchwabApiClient,
-  type TokenData,
-} from "@sudowealth/schwab-api";
-import {
   ProcessedSignals,
   TradeExecutionResult,
   TradeExecutionSummary,
   PortfolioAction,
 } from "./types";
+
+type SchwabApiClient = any;
+type TokenData = {
+  accessToken: string;
+  refreshToken?: string;
+};
+
+let schwabApiModule: any = null;
+
+async function getSchwabApiModule() {
+  if (!schwabApiModule) {
+    // In Jest, use require() so jest.mock('@sudowealth/schwab-api') applies. Everywhere else
+    // use dynamic import() because @sudowealth/schwab-api is ESM-only (require() throws ERR_REQUIRE_ESM).
+    if (typeof process !== "undefined" && process.env.JEST_WORKER_ID !== undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      schwabApiModule = require("@sudowealth/schwab-api");
+    } else {
+      const importDynamic = new Function("specifier", "return import(specifier)");
+      schwabApiModule = await importDynamic("@sudowealth/schwab-api");
+    }
+  }
+  return schwabApiModule;
+}
+
+function isSchwabAuthError(error: any): boolean {
+  return error && error.name === "SchwabAuthError" && typeof error.code === "string";
+}
 
 const ENABLE_TRADING = process.env.SCHWAB_ENABLE_TRADING === "true";
 const ACCOUNT_NUMBER = process.env.SCHWAB_ACCOUNT_NUMBER;
@@ -25,7 +44,7 @@ interface Position {
   shortQuantity: number;
 }
 
-function initializeSchwabClient(): SchwabApiClient {
+async function initializeSchwabClient(): Promise<SchwabApiClient> {
   if (schwabClient) {
     return schwabClient;
   }
@@ -43,6 +62,9 @@ function initializeSchwabClient(): SchwabApiClient {
   if (!ACCOUNT_NUMBER) {
     throw new Error("SCHWAB_ACCOUNT_NUMBER environment variable is required");
   }
+
+  const schwabApi = await getSchwabApiModule();
+  const { createSchwabAuth, createApiClient } = schwabApi;
 
   const auth = createSchwabAuth({
     oauthConfig: {
@@ -86,6 +108,9 @@ async function refreshTokensIfNeeded() {
     throw new Error("SCHWAB_REFRESH_TOKEN is required for token refresh");
   }
 
+  const schwabApi = await getSchwabApiModule();
+  const { createSchwabAuth } = schwabApi;
+
   const auth = createSchwabAuth({
     oauthConfig: {
       clientId: process.env.SCHWAB_CLIENT_ID!,
@@ -118,8 +143,8 @@ async function refreshTokensIfNeeded() {
       process.env.SCHWAB_REFRESH_TOKEN = newTokens.refreshToken;
     }
     return newTokens;
-  } catch (error) {
-    if (error instanceof SchwabAuthError && error.code === "TOKEN_EXPIRED") {
+  } catch (error: any) {
+    if (isSchwabAuthError(error) && error.code === "TOKEN_EXPIRED") {
       throw new Error(
         "Refresh token expired. Please re-authenticate through Schwab's OAuth flow."
       );
@@ -129,7 +154,7 @@ async function refreshTokensIfNeeded() {
 }
 
 async function getCurrentPositions(): Promise<Map<string, Position>> {
-  const schwab = initializeSchwabClient();
+  const schwab = await initializeSchwabClient();
   const positionsMap = new Map<string, Position>();
 
   try {
@@ -151,8 +176,8 @@ async function getCurrentPositions(): Promise<Map<string, Position>> {
         }
       }
     }
-  } catch (error) {
-    if (error instanceof SchwabAuthError) {
+  } catch (error: any) {
+    if (isSchwabAuthError(error)) {
       if (error.code === "TOKEN_EXPIRED") {
         await refreshTokensIfNeeded();
         return getCurrentPositions();
@@ -192,7 +217,7 @@ async function placeBuyOrder(
     };
   }
 
-  const schwab = initializeSchwabClient();
+  const schwab = await initializeSchwabClient();
 
   try {
     const orderBody: {
@@ -243,8 +268,8 @@ async function placeBuyOrder(
       success: true,
       orderId: response.orderId?.toString(),
     };
-  } catch (error) {
-    if (error instanceof SchwabAuthError) {
+  } catch (error: any) {
+    if (isSchwabAuthError(error)) {
       if (error.code === "TOKEN_EXPIRED") {
         await refreshTokensIfNeeded();
         return placeBuyOrder(symbol, shares, price);
@@ -293,7 +318,7 @@ async function placeSellOrder(
     };
   }
 
-  const schwab = initializeSchwabClient();
+  const schwab = await initializeSchwabClient();
 
   try {
     const orderBody: {
@@ -344,8 +369,8 @@ async function placeSellOrder(
       success: true,
       orderId: response.orderId?.toString(),
     };
-  } catch (error) {
-    if (error instanceof SchwabAuthError) {
+  } catch (error: any) {
+    if (isSchwabAuthError(error)) {
       if (error.code === "TOKEN_EXPIRED") {
         await refreshTokensIfNeeded();
         return placeSellOrder(symbol, shares, price);

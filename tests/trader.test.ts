@@ -1,17 +1,22 @@
 import { PortfolioAction } from '../src/types';
 
-jest.mock('@sudowealth/schwab-api', () => ({
-  createSchwabAuth: jest.fn(),
-  createApiClient: jest.fn(),
-  SchwabAuthError: class extends Error {
-    code: string;
-    constructor(code: string, message: string) {
-      super(message);
-      this.code = code;
-      this.name = 'SchwabAuthError';
-    }
-  },
-}));
+const mockCreateSchwabAuth = jest.fn();
+const mockCreateApiClient = jest.fn();
+
+jest.mock('@sudowealth/schwab-api', () => {
+  return {
+    createSchwabAuth: (...args: any[]) => mockCreateSchwabAuth(...args),
+    createApiClient: (...args: any[]) => mockCreateApiClient(...args),
+    SchwabAuthError: class extends Error {
+      code: string;
+      constructor(code: string, message: string) {
+        super(message);
+        this.code = code;
+        this.name = 'SchwabAuthError';
+      }
+    },
+  };
+});
 
 describe('Trader', () => {
   let mockSchwabClient: any;
@@ -28,8 +33,6 @@ describe('Trader', () => {
     process.env.SCHWAB_REFRESH_TOKEN = 'test-refresh-token';
     process.env.SCHWAB_ORDER_TYPE = 'MARKET';
 
-    const { createSchwabAuth, createApiClient } = await import('@sudowealth/schwab-api');
-    
     mockAuth = {
       refresh: jest.fn(),
     };
@@ -45,8 +48,8 @@ describe('Trader', () => {
       },
     };
 
-    (createSchwabAuth as jest.Mock).mockReturnValue(mockAuth);
-    (createApiClient as jest.Mock).mockReturnValue(mockSchwabClient);
+    mockCreateSchwabAuth.mockReturnValue(mockAuth);
+    mockCreateApiClient.mockReturnValue(mockSchwabClient);
   });
 
   afterEach(() => {
@@ -214,6 +217,11 @@ describe('Trader', () => {
       });
       mockSchwabClient.trader.orders.placeOrderForAccount
         .mockRejectedValueOnce(authError);
+
+      mockAuth.refresh.mockResolvedValue({
+        accessToken: 'new-access-token',
+        refreshToken: 'new-refresh-token',
+      });
 
       const result = await executeTradesFromActions(actions);
 
