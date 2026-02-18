@@ -57,6 +57,7 @@ Configuration is done via environment variables. Create a `.env` file in the pro
 | `MAX_RETRIES` | `3` | Maximum number of retry attempts for scraping |
 | `RETRY_DELAY_MS` | `1000` | Delay in milliseconds between retry attempts |
 | `PUPPETEER_HEADLESS` | `true` | Run Puppeteer in headless mode (set to `false` to see browser) |
+| `PUPPETEER_EXECUTABLE_PATH` | *(none)* | Path to Chrome/Chromium binary (use on servers where Puppeteer’s bundled Chrome isn’t installed) |
 | `DATABASE_URL` | *Required* | Turso/LibSQL database URL |
 | `DATABASE_AUTH_TOKEN` | *Required* | Turso/LibSQL authentication token |
 | `SCHWAB_CLIENT_ID` | *Required for trading* | Charles Schwab OAuth client ID |
@@ -138,6 +139,27 @@ The service will:
 - Run an initial check immediately
 - Schedule daily checks based on the cron schedule
 - Continue running until stopped (Ctrl+C)
+
+### Running in Docker or on a server (no bundled Chrome)
+
+On minimal or containerized environments, Puppeteer’s bundled Chrome often isn’t installed. Use a system Chrome/Chromium and point the app to it:
+
+1. **Install Chromium** (Debian/Ubuntu example):
+   ```bash
+   apt-get update && apt-get install -y chromium
+   ```
+2. **Set the executable path** (path may vary; use `which chromium` or `which chromium-browser`):
+   ```bash
+   export PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+   # or: /usr/bin/chromium-browser
+   ```
+3. Run the app as usual (`pnpm run build && pnpm start`).
+
+Alternatively, install Puppeteer’s Chrome during your image build:
+```bash
+npx puppeteer browsers install chrome
+```
+Then you don’t need `PUPPETEER_EXECUTABLE_PATH` unless you want to use a different binary.
 
 ### Running as a Background Service
 

@@ -7,15 +7,21 @@ const PORTFOLIO_URL =
 const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || "3", 10);
 const RETRY_DELAY_MS = parseInt(process.env.RETRY_DELAY_MS || "1000", 10);
 const HEADLESS = process.env.PUPPETEER_HEADLESS !== "false";
+/** Use system Chrome/Chromium when set (e.g. in Docker: install chromium and set to /usr/bin/chromium). */
+const EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 
 let browser: Browser | null = null;
 
 async function getBrowser(): Promise<Browser> {
   if (!browser) {
-    browser = await puppeteer.launch({
+    const launchOptions: Parameters<typeof puppeteer.launch>[0] = {
       headless: HEADLESS,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    };
+    if (EXECUTABLE_PATH) {
+      launchOptions.executablePath = EXECUTABLE_PATH;
+    }
+    browser = await puppeteer.launch(launchOptions);
   }
   return browser;
 }
