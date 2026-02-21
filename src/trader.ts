@@ -1,4 +1,9 @@
 import {
+  readSchwabCredentials,
+  writeSchwabCredentials,
+  type SchwabCredentials,
+} from "./state";
+import {
   ProcessedSignals,
   TradeExecutionResult,
   TradeExecutionSummary,
@@ -33,8 +38,15 @@ function isSchwabAuthError(error: any): boolean {
 }
 
 const ENABLE_TRADING = process.env.SCHWAB_ENABLE_TRADING === "true";
-const ACCOUNT_NUMBER = process.env.SCHWAB_ACCOUNT_NUMBER;
 const ORDER_TYPE = (process.env.SCHWAB_ORDER_TYPE || "MARKET") as "MARKET" | "LIMIT";
+
+async function getAccountNumber(): Promise<string | undefined> {
+  if (process.env.SCHWAB_ACCOUNT_NUMBER) {
+    return process.env.SCHWAB_ACCOUNT_NUMBER;
+  }
+  const creds = await readSchwabCredentials();
+  return creds?.accountNumber;
+}
 
 let schwabClient: SchwabApiClient | null = null;
 
@@ -51,16 +63,23 @@ async function initializeSchwabClient(): Promise<SchwabApiClient> {
 
   const clientId = process.env.SCHWAB_CLIENT_ID;
   const clientSecret = process.env.SCHWAB_CLIENT_SECRET;
-  const redirectUri = process.env.SCHWAB_REDIRECT_URI;
+  const credentialsFromDb = await readSchwabCredentials();
+  const redirectUri =
+    process.env.SCHWAB_REDIRECT_URI ||
+    credentialsFromDb?.redirectUri ||
+    "https://127.0.0.1:8765/callback";
 
-  if (!clientId || !clientSecret || !redirectUri) {
+  if (!clientId || !clientSecret) {
     throw new Error(
-      "SCHWAB_CLIENT_ID, SCHWAB_CLIENT_SECRET, and SCHWAB_REDIRECT_URI environment variables are required"
+      "SCHWAB_CLIENT_ID and SCHWAB_CLIENT_SECRET (in .env or app config) are required"
     );
   }
 
-  if (!ACCOUNT_NUMBER) {
-    throw new Error("SCHWAB_ACCOUNT_NUMBER environment variable is required");
+  const accountNumber = await getAccountNumber();
+  if (!accountNumber) {
+    throw new Error(
+      "SCHWAB_ACCOUNT_NUMBER is required: set it in .env or run 'pnpm run schwab-login' to save credentials to the database"
+    );
   }
 
   const schwabApi = await getSchwabApiModule();
@@ -75,9 +94,15 @@ async function initializeSchwabClient(): Promise<SchwabApiClient> {
         const accessToken = process.env.SCHWAB_ACCESS_TOKEN;
         const refreshToken = process.env.SCHWAB_REFRESH_TOKEN;
         if (accessToken && refreshToken) {
+          return { accessToken, refreshToken };
+        }
+        const creds = await readSchwabCredentials();
+        if (creds?.accessToken && creds?.refreshToken) {
+          process.env.SCHWAB_ACCESS_TOKEN = creds.accessToken;
+          process.env.SCHWAB_REFRESH_TOKEN = creds.refreshToken;
           return {
-            accessToken,
-            refreshToken,
+            accessToken: creds.accessToken,
+            refreshToken: creds.refreshToken,
           };
         }
         return null;
@@ -86,6 +111,17 @@ async function initializeSchwabClient(): Promise<SchwabApiClient> {
         process.env.SCHWAB_ACCESS_TOKEN = tokens.accessToken;
         if (tokens.refreshToken) {
           process.env.SCHWAB_REFRESH_TOKEN = tokens.refreshToken;
+        }
+        try {
+          const current = await readSchwabCredentials();
+          await writeSchwabCredentials({
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken ?? current?.refreshToken ?? "",
+            redirectUri: current?.redirectUri,
+            accountNumber: current?.accountNumber,
+          });
+        } catch (e) {
+          console.warn("Could not update Schwab credentials in database:", (e as Error).message);
         }
       },
     },
@@ -159,7 +195,7 @@ async function getCurrentPositions(): Promise<Map<string, Position>> {
 
   try {
     const account = await schwab.trader.accounts.getAccountByNumber({
-      pathParams: { accountNumber: ACCOUNT_NUMBER! },
+      pathParams: { accountNumber: (await getAccountNumber())! },
       queryParams: { fields: "positions" },
     });
 
@@ -188,6 +224,26 @@ async function getCurrentPositions(): Promise<Map<string, Position>> {
   }
 
   return positionsMap;
+}
+
+/** Read-only verification: initializes the Schwab client and fetches account positions. Use to verify env and tokens. */
+export async function verifySchwabConnection(): Promise<{
+  ok: boolean;
+  message: string;
+  positionsCount?: number;
+}> {
+  try {
+    await initializeSchwabClient();
+    const positions = await getCurrentPositions();
+    return {
+      ok: true,
+      message: "Schwab API connected",
+      positionsCount: positions.size,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, message };
+  }
 }
 
 async function placeBuyOrder(
@@ -256,7 +312,7 @@ async function placeBuyOrder(
     }
 
     const response = await schwab.trader.orders.placeOrderForAccount({
-      pathParams: { accountNumber: ACCOUNT_NUMBER! },
+      pathParams: { accountNumber: (await getAccountNumber())! },
       body: orderBody as any,
     });
 
@@ -357,7 +413,7 @@ async function placeSellOrder(
     }
 
     const response = await schwab.trader.orders.placeOrderForAccount({
-      pathParams: { accountNumber: ACCOUNT_NUMBER! },
+      pathParams: { accountNumber: (await getAccountNumber())! },
       body: orderBody as any,
     });
 

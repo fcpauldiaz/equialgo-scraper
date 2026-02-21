@@ -11,10 +11,18 @@ describe('Scraper', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    
+    process.env.LOGIN_EMAIL = 'test@example.com';
+    process.env.LOGIN_PASSWORD = 'test-password';
+
+    const mockClick = jest.fn().mockResolvedValue(undefined);
     mockPage = {
       setUserAgent: jest.fn().mockResolvedValue(undefined),
       goto: jest.fn().mockResolvedValue({ ok: () => true, status: () => 200 }),
+      waitForSelector: jest.fn().mockResolvedValue(undefined),
+      type: jest.fn().mockResolvedValue(undefined),
+      $: jest.fn().mockResolvedValue({ click: mockClick }),
+      $$: jest.fn().mockResolvedValue([]),
+      waitForNavigation: jest.fn().mockResolvedValue(undefined),
       evaluate: jest.fn(),
       close: jest.fn().mockResolvedValue(undefined),
     };

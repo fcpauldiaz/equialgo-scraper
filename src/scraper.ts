@@ -10,6 +10,12 @@ const HEADLESS = process.env.PUPPETEER_HEADLESS !== "false";
 /** Use system Chrome/Chromium when set (e.g. in Docker: install chromium and set to /usr/bin/chromium). */
 const EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 
+function getSignInUrl(): string {
+  const base = new URL(PORTFOLIO_URL).origin;
+  const callbackPath = new URL(PORTFOLIO_URL).pathname;
+  return `${base}/signin?callbackUrl=${encodeURIComponent(callbackPath)}`;
+}
+
 let browser: Browser | null = null;
 
 async function getBrowser(): Promise<Browser> {
@@ -71,7 +77,58 @@ function extractDate(page: Page): string {
   return today.toISOString().split("T")[0];
 }
 
+/** Performs sign-in on the page so subsequent navigation to portfolio is authenticated. */
+async function signIn(page: Page, email: string, password: string): Promise<void> {
+  const signInUrl = getSignInUrl();
+  console.log("Signing in before scrape...");
+  await page.goto(signInUrl, { waitUntil: "networkidle2", timeout: 30000 });
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+
+  const emailSel = 'input[type="email"]';
+  const passwordSel = 'input[type="password"]';
+  await page.waitForSelector(emailSel, { timeout: 10000 });
+  await page.waitForSelector(passwordSel, { timeout: 5000 });
+
+  await page.type(emailSel, email, { delay: 50 });
+  await page.type(passwordSel, password, { delay: 50 });
+
+  const submit =
+    (await page.$('button[type="submit"]')) ||
+    (await page.$('input[type="submit"]'));
+  if (submit) {
+    await submit.click();
+  } else {
+    const buttons = await page.$$("button, [role='button']");
+    let clicked = false;
+    for (const btn of buttons) {
+      const text = await page.evaluate((el) => (el as HTMLElement).textContent?.toLowerCase() || "", btn);
+      if (text.includes("sign in")) {
+        await btn.click();
+        clicked = true;
+        break;
+      }
+    }
+    if (!clicked) throw new Error("Could not find Sign In submit button");
+  }
+
+  await Promise.race([
+    page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }),
+    new Promise((_, rej) => setTimeout(() => rej(new Error("Login navigation timeout")), 15000)),
+  ]).catch(() => {
+    // Navigation might have completed already; continue
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+}
+
 export async function scrapePortfolioData(): Promise<ScrapedPortfolioData> {
+  const loginEmail = process.env.LOGIN_EMAIL || "";
+  const loginPassword = process.env.LOGIN_PASSWORD || "";
+  if (!loginEmail.trim() || !loginPassword) {
+    throw new Error(
+      "LOGIN_EMAIL and LOGIN_PASSWORD environment variables are required to access the portfolio."
+    );
+  }
+
   let lastError: Error | null = null;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -86,6 +143,8 @@ export async function scrapePortfolioData(): Promise<ScrapedPortfolioData> {
 
       console.log(`Scraping portfolio data from ${PORTFOLIO_URL} (attempt ${attempt})...`);
 
+      await signIn(page, loginEmail, loginPassword);
+
       await page.goto(PORTFOLIO_URL, {
         waitUntil: "networkidle2",
         timeout: 30000,
@@ -93,7 +152,7 @@ export async function scrapePortfolioData(): Promise<ScrapedPortfolioData> {
 
       await new Promise((resolve) => setTimeout(resolve, 2000));
 
-      const actions = await page.evaluate(() => {
+      const rawActions = await page.evaluate(() => {
         // This code runs in the browser context - DOM types are available at runtime
         // @ts-ignore - document is available in browser context
         const doc: any = typeof document !== 'undefined' ? document : null;
@@ -240,6 +299,7 @@ export async function scrapePortfolioData(): Promise<ScrapedPortfolioData> {
         return results;
       });
 
+      const actions = Array.isArray(rawActions) ? rawActions : [];
       if (actions.length === 0) {
         throw new Error("No actions found in 'Today's Actions' table. The page may be client-rendered or the table structure has changed.");
       }

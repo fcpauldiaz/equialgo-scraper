@@ -54,6 +54,8 @@ Configuration is done via environment variables. Create a `.env` file in the pro
 | `NTFY_BASE_URL` | `https://ntfy.sh` | Base URL for ntfy service |
 | `PORTFOLIO_SIZE` | `10000` | Portfolio size in dollars for share calculations (legacy, not used with scraper) |
 | `PORTFOLIO_URL` | `https://www.systemtrader.co/gemini/portfolio` | SystemTrader Gemini Portfolio page URL to scrape |
+| `LOGIN_EMAIL` | *Required* | Email for signing in to the portfolio site |
+| `LOGIN_PASSWORD` | *Required* | Password for signing in to the portfolio site |
 | `MAX_RETRIES` | `3` | Maximum number of retry attempts for scraping |
 | `RETRY_DELAY_MS` | `1000` | Delay in milliseconds between retry attempts |
 | `PUPPETEER_HEADLESS` | `true` | Run Puppeteer in headless mode (set to `false` to see browser) |
@@ -86,6 +88,8 @@ PORTFOLIO_SIZE=10000
 
 # Scraper configuration
 PORTFOLIO_URL=https://www.systemtrader.co/gemini/portfolio
+LOGIN_EMAIL=your_email@example.com
+LOGIN_PASSWORD=your_password
 
 # Retry configuration
 MAX_RETRIES=3
@@ -185,7 +189,32 @@ pm2 startup
 
 ## Schwab API Setup
 
-To enable automatic trading, you need to:
+### Option A: OAuth login script (recommended)
+
+Credentials are stored in the **database** (table `schwab_credentials`), not in `.env`.
+
+1. **In `.env`** set only:
+   - `SCHWAB_CLIENT_ID`
+   - `SCHWAB_CLIENT_SECRET`
+
+2. **In your [Schwab app](https://developer.schwab.com/dashboard/apps)** add this callback URL:
+   - `http://localhost:8765/callback`
+
+3. **Run the login script** (build first, then run):
+   ```bash
+   pnpm run build && pnpm run schwab-login
+   ```
+   - A browser opens for Schwab login; after you sign in, tokens and account number are written to the database (table `schwab_credentials`).
+   - The app will use them automatically (no need to copy tokens into `.env`).
+
+4. **Verify** the connection:
+   ```bash
+   pnpm run verify:schwab
+   ```
+
+### Option B: Manual / .env only
+
+To enable automatic trading with env vars only:
 
 1. **Create a Schwab Developer Account**: Register at [Schwab Developer Portal](https://developer.schwab.com/)
 2. **Create an OAuth Application**: Get your `client_id`, `client_secret`, and configure a `redirect_uri`

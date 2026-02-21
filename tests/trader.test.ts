@@ -18,6 +18,11 @@ jest.mock('@sudowealth/schwab-api', () => {
   };
 });
 
+jest.mock('../src/state', () => ({
+  readSchwabCredentials: jest.fn().mockResolvedValue(null),
+  writeSchwabCredentials: jest.fn().mockResolvedValue(undefined),
+}));
+
 describe('Trader', () => {
   let mockSchwabClient: any;
   let mockAuth: any;

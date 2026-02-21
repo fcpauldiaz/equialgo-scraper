@@ -6,6 +6,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsc && node dist/index.js",
+    "schwab-login": "node dist/scripts/schwab-login.js",
+    "verify:schwab": "node -e \"require('dotenv').config(); require('./dist/trader').verifySchwabConnection().then(r => { if (r.ok) { console.log('Schwab API: OK', r.positionsCount !== undefined ? '(' + r.positionsCount + ' positions)' : ''); } else { console.error('Schwab API: FAILED -', r.message); process.exit(1); } }).catch(e => { console.error('Error:', e.message); process.exit(1); })\"",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage"
@@ -26,7 +28,8 @@
     "@sudowealth/schwab-api": "^2.1.1",
     "dotenv": "^17.2.3",
     "node-cron": "^4.2.1",
-    "puppeteer": "^24.36.1"
+    "puppeteer": "^24.36.1",
+    "selfsigned": "^5.5.0"
   },
   "packageManager": "pnpm@10.28.0+sha512.05df71d1421f21399e053fde567cea34d446fa02c76571441bfc1c7956e98e363088982d940465fd34480d4d90a0668bc12362f8aa88000a64e83d0b0e47be48"
 }
