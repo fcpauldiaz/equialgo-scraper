@@ -300,9 +300,6 @@ export async function scrapePortfolioData(): Promise<ScrapedPortfolioData> {
       });
 
       const actions = Array.isArray(rawActions) ? rawActions : [];
-      if (actions.length === 0) {
-        throw new Error("No actions found in 'Today's Actions' table. The page may be client-rendered or the table structure has changed.");
-      }
 
       const date = extractDate(page);
 
