@@ -275,6 +275,19 @@ export async function verifySchwabConnection(portfolioId: number): Promise<{
   }
 }
 
+export type PortfolioPosition = {
+  symbol: string;
+  longQuantity: number;
+  shortQuantity: number;
+};
+
+export async function getPortfolioPositions(
+  portfolioId: number
+): Promise<PortfolioPosition[]> {
+  const map = await getCurrentPositions(portfolioId);
+  return Array.from(map.values());
+}
+
 async function placeBuyOrder(
   portfolioId: number,
   symbol: string,

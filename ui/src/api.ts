@@ -50,3 +50,33 @@ export async function verifyPortfolio(portfolioId: number): Promise<VerifyResult
   if (!r.ok) throw new Error(r.statusText);
   return r.json();
 }
+
+export interface Statistics {
+  lastProcessedDate: string | null;
+  lastProcessedTimestamp: number | null;
+  portfolioCount: number;
+  connectedCount: number;
+}
+
+export async function fetchStatistics(): Promise<Statistics> {
+  const r = await fetch("/api/statistics");
+  if (!r.ok) throw new Error(r.statusText);
+  return r.json();
+}
+
+export interface PortfolioPosition {
+  symbol: string;
+  longQuantity: number;
+  shortQuantity: number;
+}
+
+export async function fetchPortfolioPositions(
+  portfolioId: number
+): Promise<PortfolioPosition[]> {
+  const r = await fetch(`/api/portfolios/${portfolioId}/positions`);
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || r.statusText);
+  }
+  return r.json();
+}

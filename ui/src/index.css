@@ -84,3 +84,93 @@ ul {
   font-size: 0.875rem;
   margin-top: 0.5rem;
 }
+
+.app-nav {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid #eee;
+}
+
+.app-nav a {
+  color: #06c;
+  text-decoration: none;
+}
+
+.app-nav a:hover {
+  text-decoration: underline;
+}
+
+.app-nav a.active {
+  font-weight: 600;
+  color: #000;
+}
+
+.stats-section {
+  margin-bottom: 1.5rem;
+}
+
+.stats-section h2,
+.dashboard-portfolios h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.stats-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.stats-list li {
+  padding: 0.25rem 0;
+}
+
+.dashboard-portfolios {
+  margin-bottom: 1.5rem;
+}
+
+.portfolio-actions a {
+  color: #06c;
+  text-decoration: none;
+  font-size: 0.875rem;
+}
+
+.portfolio-actions a:hover {
+  text-decoration: underline;
+}
+
+.breadcrumb {
+  font-size: 0.875rem;
+  color: #666;
+  margin-bottom: 0.5rem;
+}
+
+.breadcrumb a {
+  color: #06c;
+  text-decoration: none;
+}
+
+.breadcrumb a:hover {
+  text-decoration: underline;
+}
+
+.positions-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.75rem;
+}
+
+.positions-table th,
+.positions-table td {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.positions-table th {
+  font-weight: 600;
+  font-size: 0.875rem;
+}

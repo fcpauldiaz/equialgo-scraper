@@ -4,9 +4,10 @@ import * as path from "path";
 import {
   listPortfolios,
   createPortfolio,
+  readState,
 } from "./state";
 import { startSchwabLoginFlow, isSchwabLoginInProgress } from "./schwab-oauth";
-import { verifySchwabConnection } from "./trader";
+import { verifySchwabConnection, getPortfolioPositions } from "./trader";
 
 const UI_PORT = parseInt(process.env.UI_PORT || "3000", 10);
 
@@ -167,6 +168,41 @@ export function startUiServer(): http.Server {
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         sendJson(res, 500, { ok: false, message });
+      }
+      return;
+    }
+
+    if (pathname === "/api/statistics" && method === "GET") {
+      try {
+        const state = await readState();
+        const portfolios = await listPortfolios();
+        const connectedCount = portfolios.filter((p) => p.hasCredentials).length;
+        sendJson(res, 200, {
+          lastProcessedDate: state.lastProcessedDate,
+          lastProcessedTimestamp: state.lastProcessedTimestamp,
+          portfolioCount: portfolios.length,
+          connectedCount,
+        });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        sendJson(res, 500, { error: message });
+      }
+      return;
+    }
+
+    const positionsMatch = pathname.match(/^\/api\/portfolios\/(\d+)\/positions$/);
+    if (positionsMatch && method === "GET") {
+      const portfolioId = parseInt(positionsMatch[1], 10);
+      if (portfolioId <= 0) {
+        sendJson(res, 400, { error: "Invalid portfolio id" });
+        return;
+      }
+      try {
+        const positions = await getPortfolioPositions(portfolioId);
+        sendJson(res, 200, positions);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        sendJson(res, 503, { error: message });
       }
       return;
     }
