@@ -67,7 +67,10 @@ export async function fetchStatistics(): Promise<Statistics> {
 export interface PortfolioPosition {
   symbol: string;
   longQuantity: number;
-  shortQuantity: number;
+  currentDayProfitLoss?: number;
+  currentDayProfitLossPercentage?: number;
+  longOpenProfitLoss?: number;
+  marketValue?: number;
 }
 
 export async function fetchPortfolioPositions(

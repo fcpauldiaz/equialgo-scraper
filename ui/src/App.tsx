@@ -224,8 +224,11 @@ function PortfolioDetailView({ portfolioId, portfolios }: { portfolioId: number;
               <thead>
                 <tr>
                   <th>Symbol</th>
-                  <th>Long quantity</th>
-                  <th>Short quantity</th>
+                  <th>Quantity</th>
+                  <th>Market value</th>
+                  <th>Day P/L</th>
+                  <th>Day P/L %</th>
+                  <th>Open P/L</th>
                 </tr>
               </thead>
               <tbody>
@@ -233,7 +236,26 @@ function PortfolioDetailView({ portfolioId, portfolios }: { portfolioId: number;
                   <tr key={pos.symbol}>
                     <td>{pos.symbol}</td>
                     <td>{pos.longQuantity}</td>
-                    <td>{pos.shortQuantity}</td>
+                    <td>
+                      {pos.marketValue != null
+                        ? `$${pos.marketValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : "—"}
+                    </td>
+                    <td className={pos.currentDayProfitLoss != null && pos.currentDayProfitLoss < 0 ? "pl-negative" : "pl-positive"}>
+                      {pos.currentDayProfitLoss != null
+                        ? `$${pos.currentDayProfitLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : "—"}
+                    </td>
+                    <td className={pos.currentDayProfitLossPercentage != null && pos.currentDayProfitLossPercentage < 0 ? "pl-negative" : "pl-positive"}>
+                      {pos.currentDayProfitLossPercentage != null
+                        ? `${pos.currentDayProfitLossPercentage.toFixed(2)}%`
+                        : "—"}
+                    </td>
+                    <td className={pos.longOpenProfitLoss != null && pos.longOpenProfitLoss < 0 ? "pl-negative" : "pl-positive"}>
+                      {pos.longOpenProfitLoss != null
+                        ? `$${pos.longOpenProfitLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : "—"}
+                    </td>
                   </tr>
                 ))}
               </tbody>

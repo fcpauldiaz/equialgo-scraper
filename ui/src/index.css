@@ -174,3 +174,11 @@ ul {
   font-weight: 600;
   font-size: 0.875rem;
 }
+
+.positions-table .pl-positive {
+  color: #0a0;
+}
+
+.positions-table .pl-negative {
+  color: #c00;
+}

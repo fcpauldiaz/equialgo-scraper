@@ -84,6 +84,10 @@ interface Position {
   symbol: string;
   longQuantity: number;
   shortQuantity: number;
+  currentDayProfitLoss?: number;
+  currentDayProfitLossPercentage?: number;
+  longOpenProfitLoss?: number;
+  marketValue?: number;
 }
 
 async function initializeSchwabClient(portfolioId: number): Promise<SchwabApiClient> {
@@ -234,12 +238,24 @@ async function getCurrentPositions(
     if (account.securitiesAccount?.positions && Array.isArray(account.securitiesAccount.positions)) {
       for (const position of account.securitiesAccount.positions) {
         if (position.instrument?.symbol) {
-          const longQuantity = (position as { longQuantity?: number }).longQuantity || 0;
-          const shortQuantity = position.shortQuantity || 0;
+          const p = position as {
+            longQuantity?: number;
+            shortQuantity?: number;
+            currentDayProfitLoss?: number;
+            currentDayProfitLossPercentage?: number;
+            longOpenProfitLoss?: number;
+            marketValue?: number;
+          };
+          const longQuantity = p.longQuantity ?? 0;
+          const shortQuantity = p.shortQuantity ?? 0;
           positionsMap.set(position.instrument.symbol, {
             symbol: position.instrument.symbol,
             longQuantity,
             shortQuantity,
+            currentDayProfitLoss: p.currentDayProfitLoss,
+            currentDayProfitLossPercentage: p.currentDayProfitLossPercentage,
+            longOpenProfitLoss: p.longOpenProfitLoss,
+            marketValue: p.marketValue,
           });
         }
       }
@@ -278,14 +294,24 @@ export async function verifySchwabConnection(portfolioId: number): Promise<{
 export type PortfolioPosition = {
   symbol: string;
   longQuantity: number;
-  shortQuantity: number;
+  currentDayProfitLoss?: number;
+  currentDayProfitLossPercentage?: number;
+  longOpenProfitLoss?: number;
+  marketValue?: number;
 };
 
 export async function getPortfolioPositions(
   portfolioId: number
 ): Promise<PortfolioPosition[]> {
   const map = await getCurrentPositions(portfolioId);
-  return Array.from(map.values());
+  return Array.from(map.values()).map((p) => ({
+    symbol: p.symbol,
+    longQuantity: p.longQuantity,
+    currentDayProfitLoss: p.currentDayProfitLoss,
+    currentDayProfitLossPercentage: p.currentDayProfitLossPercentage,
+    longOpenProfitLoss: p.longOpenProfitLoss,
+    marketValue: p.marketValue,
+  }));
 }
 
 async function placeBuyOrder(
