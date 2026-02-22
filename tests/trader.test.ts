@@ -33,13 +33,19 @@ describe('Trader', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     process.env.SCHWAB_ENABLE_TRADING = 'true';
-    process.env.SCHWAB_ACCOUNT_NUMBER = '123456789';
     process.env.SCHWAB_CLIENT_ID = 'test-client-id';
     process.env.SCHWAB_CLIENT_SECRET = 'test-client-secret';
     process.env.SCHWAB_REDIRECT_URI = 'http://localhost:3000/callback';
     process.env.SCHWAB_ACCESS_TOKEN = 'test-access-token';
     process.env.SCHWAB_REFRESH_TOKEN = 'test-refresh-token';
     process.env.SCHWAB_ORDER_TYPE = 'MARKET';
+
+    mockReadSchwabCredentials.mockResolvedValue({
+      accessToken: 'test-access-token',
+      refreshToken: 'test-refresh-token',
+      redirectUri: 'http://localhost:3000/callback',
+      accountNumber: '123456789',
+    });
 
     mockAuth = {
       refresh: jest.fn(),
@@ -48,6 +54,9 @@ describe('Trader', () => {
     mockSchwabClient = {
       trader: {
         accounts: {
+          getAccountNumbers: jest.fn().mockResolvedValue([
+            { accountNumber: '123456789', hashValue: 'mock-hash-123' },
+          ]),
           getAccountByNumber: jest.fn(),
         },
         orders: {
@@ -88,7 +97,7 @@ describe('Trader', () => {
         orderId: '12345',
       });
       expect(mockSchwabClient.trader.orders.placeOrderForAccount).toHaveBeenCalledWith({
-        pathParams: { accountNumber: '123456789' },
+        pathParams: { accountNumber: 'mock-hash-123' },
         body: expect.objectContaining({
           orderType: 'MARKET',
           orderLegCollection: [
@@ -128,7 +137,7 @@ describe('Trader', () => {
         orderId: '67890',
       });
       expect(mockSchwabClient.trader.orders.placeOrderForAccount).toHaveBeenCalledWith({
-        pathParams: { accountNumber: '123456789' },
+        pathParams: { accountNumber: 'mock-hash-123' },
         body: expect.objectContaining({
           orderType: 'MARKET',
           orderLegCollection: [
@@ -218,6 +227,7 @@ describe('Trader', () => {
         accessToken: 'test-access-token',
         refreshToken: 'test-refresh-token',
         redirectUri: 'https://127.0.0.1:8765/callback',
+        accountNumber: '123456789',
       });
       const { executeTradesFromActions } = await import('../src/trader');
       const actions: PortfolioAction[] = [
@@ -286,8 +296,8 @@ describe('Trader', () => {
       expect(mockSchwabClient.trader.orders.placeOrderForAccount).toHaveBeenCalledTimes(3);
     });
 
-    it('should handle missing environment variables', async () => {
-      delete process.env.SCHWAB_ACCOUNT_NUMBER;
+    it('should handle missing credentials', async () => {
+      mockReadSchwabCredentials.mockResolvedValue(null);
       jest.resetModules();
 
       const actions: PortfolioAction[] = [
@@ -296,7 +306,7 @@ describe('Trader', () => {
 
       const { executeTradesFromActions: executeTrades } = await import('../src/trader');
 
-      await expect(executeTrades(actions, 1)).rejects.toThrow('SCHWAB_ACCOUNT_NUMBER');
+      await expect(executeTrades(actions, 1)).rejects.toThrow(/Schwab credentials are required|OAuth login/);
     });
   });
 });

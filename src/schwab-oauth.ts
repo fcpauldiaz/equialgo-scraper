@@ -150,23 +150,29 @@ export async function startSchwabLoginFlow(
 
       let accountNumber: string | undefined;
       try {
-        const accounts = await apiClient.trader.accounts.getAccounts();
-        const first =
-          (accounts as { securitiesAccount?: { accountNumber?: string } }[])?.[0] ??
-          (accounts as { accounts?: { securitiesAccount?: { accountNumber?: string } }[] })
-            ?.accounts?.[0];
-        if (first?.securitiesAccount?.accountNumber) {
-          accountNumber = String(first.securitiesAccount.accountNumber);
+        const raw = await apiClient.trader.accounts.getAccounts();
+        const list = Array.isArray(raw)
+          ? raw
+          : (raw as { accounts?: unknown[] })?.accounts;
+        const first = Array.isArray(list) ? list[0] : undefined;
+        const item = first as { accountNumber?: string; securitiesAccount?: { accountNumber?: string } } | undefined;
+        if (item?.securitiesAccount?.accountNumber) {
+          accountNumber = String(item.securitiesAccount.accountNumber);
+        } else if (item?.accountNumber) {
+          accountNumber = String(item.accountNumber);
         }
-      } catch {
-        // optional
+        if (!accountNumber?.trim()) {
+          console.warn("Schwab getAccounts did not return an account number; Verify and trading may fail until you re-link this portfolio.");
+        }
+      } catch (e) {
+        console.warn("Could not fetch account number from Schwab getAccounts:", (e as Error).message);
       }
 
       await writeSchwabCredentials(resolvedPortfolioId, {
         accessToken,
         refreshToken,
         redirectUri,
-        ...(accountNumber && { accountNumber }),
+        ...(accountNumber?.trim() && { accountNumber: accountNumber.trim() }),
       });
 
       res.writeHead(200, { "Content-Type": "text/html" });

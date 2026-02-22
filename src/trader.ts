@@ -40,15 +40,45 @@ function isSchwabAuthError(error: any): boolean {
 const ENABLE_TRADING = process.env.SCHWAB_ENABLE_TRADING === "true";
 const ORDER_TYPE = (process.env.SCHWAB_ORDER_TYPE || "MARKET") as "MARKET" | "LIMIT";
 
-async function getAccountNumber(portfolioId: number): Promise<string | undefined> {
-  if (process.env.SCHWAB_ACCOUNT_NUMBER) {
-    return process.env.SCHWAB_ACCOUNT_NUMBER;
-  }
-  const creds = await readSchwabCredentials(portfolioId);
-  return creds?.accountNumber;
+const schwabClientByPortfolio = new Map<number, SchwabApiClient>();
+const accountHashByPortfolio = new Map<number, string>();
+
+type AccountNumberEntry = { accountNumber: string; hashValue: string };
+
+function parseAccountNumbersResponse(raw: unknown): AccountNumberEntry[] {
+  const list = Array.isArray(raw) ? raw : [];
+  return list
+    .map((item: unknown) => {
+      const o = item as { accountNumber?: string; hashValue?: string };
+      if (o?.accountNumber != null && o?.hashValue != null) {
+        return { accountNumber: String(o.accountNumber), hashValue: String(o.hashValue) };
+      }
+      return null;
+    })
+    .filter((e): e is AccountNumberEntry => e !== null);
 }
 
-const schwabClientByPortfolio = new Map<number, SchwabApiClient>();
+async function getAccountHashFromApi(portfolioId: number): Promise<string> {
+  const cached = accountHashByPortfolio.get(portfolioId);
+  if (cached) {
+    return cached;
+  }
+  const schwab = await initializeSchwabClient(portfolioId);
+  const raw = await schwab.trader.accounts.getAccountNumbers();
+  const entries = parseAccountNumbersResponse(raw);
+  console.log(
+    "Account numbers (hash) from getAccountNumbers():",
+    entries.length ? entries.map((e) => ({ accountNumber: e.accountNumber, hashPrefix: e.hashValue.length > 8 ? e.hashValue.slice(0, 8) + "…" : "…" })) : "(none)"
+  );
+  const first = entries[0];
+  if (!first?.hashValue?.trim()) {
+    throw new Error(
+      "Schwab getAccountNumbers() did not return a hash for this portfolio. Re-run Schwab OAuth login."
+    );
+  }
+  accountHashByPortfolio.set(portfolioId, first.hashValue);
+  return first.hashValue;
+}
 
 interface Position {
   symbol: string;
@@ -65,21 +95,19 @@ async function initializeSchwabClient(portfolioId: number): Promise<SchwabApiCli
   const clientId = process.env.SCHWAB_CLIENT_ID;
   const clientSecret = process.env.SCHWAB_CLIENT_SECRET;
   const credentialsFromDb = await readSchwabCredentials(portfolioId);
+  if (!credentialsFromDb?.accessToken || !credentialsFromDb?.refreshToken) {
+    throw new Error(
+      "Schwab credentials are required for this portfolio. Complete the Schwab OAuth login (UI or pnpm run schwab-login)."
+    );
+  }
   const redirectUri =
     process.env.SCHWAB_REDIRECT_URI ||
-    credentialsFromDb?.redirectUri ||
+    credentialsFromDb.redirectUri ||
     "https://127.0.0.1:8765/callback";
 
   if (!clientId || !clientSecret) {
     throw new Error(
       "SCHWAB_CLIENT_ID and SCHWAB_CLIENT_SECRET (in .env or app config) are required"
-    );
-  }
-
-  const accountNumber = await getAccountNumber(portfolioId);
-  if (!accountNumber) {
-    throw new Error(
-      "SCHWAB_ACCOUNT_NUMBER is required: set it in .env or run 'pnpm run schwab-login' to save credentials to the database"
     );
   }
 
@@ -92,15 +120,8 @@ async function initializeSchwabClient(portfolioId: number): Promise<SchwabApiCli
       clientSecret,
       redirectUri,
       load: async (): Promise<TokenData | null> => {
-        const accessToken = process.env.SCHWAB_ACCESS_TOKEN;
-        const refreshToken = process.env.SCHWAB_REFRESH_TOKEN;
-        if (accessToken && refreshToken) {
-          return { accessToken, refreshToken };
-        }
         const creds = await readSchwabCredentials(portfolioId);
         if (creds?.accessToken && creds?.refreshToken) {
-          process.env.SCHWAB_ACCESS_TOKEN = creds.accessToken;
-          process.env.SCHWAB_REFRESH_TOKEN = creds.refreshToken;
           return {
             accessToken: creds.accessToken,
             refreshToken: creds.refreshToken,
@@ -109,10 +130,6 @@ async function initializeSchwabClient(portfolioId: number): Promise<SchwabApiCli
         return null;
       },
       save: async (tokens: TokenData): Promise<void> => {
-        process.env.SCHWAB_ACCESS_TOKEN = tokens.accessToken;
-        if (tokens.refreshToken) {
-          process.env.SCHWAB_REFRESH_TOKEN = tokens.refreshToken;
-        }
         try {
           const current = await readSchwabCredentials(portfolioId);
           await writeSchwabCredentials(portfolioId, {
@@ -142,9 +159,9 @@ async function initializeSchwabClient(portfolioId: number): Promise<SchwabApiCli
 
 async function refreshTokensIfNeeded(portfolioId: number): Promise<TokenData> {
   const creds = await readSchwabCredentials(portfolioId);
-  const refreshToken = creds?.refreshToken ?? process.env.SCHWAB_REFRESH_TOKEN;
+  const refreshToken = creds?.refreshToken;
   if (!refreshToken) {
-    throw new Error("SCHWAB_REFRESH_TOKEN is required for token refresh");
+    throw new Error("No refresh token for this portfolio; re-run Schwab OAuth login.");
   }
 
   const schwabApi = await getSchwabApiModule();
@@ -189,6 +206,7 @@ async function refreshTokensIfNeeded(portfolioId: number): Promise<TokenData> {
       accountNumber: current?.accountNumber,
     });
     schwabClientByPortfolio.delete(portfolioId);
+    accountHashByPortfolio.delete(portfolioId);
     return newTokens;
   } catch (error: unknown) {
     if (isSchwabAuthError(error) && (error as { code?: string }).code === "TOKEN_EXPIRED") {
@@ -206,9 +224,10 @@ async function getCurrentPositions(
   const schwab = await initializeSchwabClient(portfolioId);
   const positionsMap = new Map<string, Position>();
 
+  const accountNumber = await getAccountHashFromApi(portfolioId);
   try {
     const account = await schwab.trader.accounts.getAccountByNumber({
-      pathParams: { accountNumber: (await getAccountNumber(portfolioId))! },
+      pathParams: { accountNumber },
       queryParams: { fields: "positions" },
     });
 
@@ -323,7 +342,7 @@ async function placeBuyOrder(
     }
 
     const response = await schwab.trader.orders.placeOrderForAccount({
-      pathParams: { accountNumber: (await getAccountNumber(portfolioId))! },
+      pathParams: { accountNumber: await getAccountHashFromApi(portfolioId) },
       body: orderBody as Record<string, unknown>,
     });
 
@@ -423,7 +442,7 @@ async function placeSellOrder(
     }
 
     const response = await schwab.trader.orders.placeOrderForAccount({
-      pathParams: { accountNumber: (await getAccountNumber(portfolioId))! },
+      pathParams: { accountNumber: await getAccountHashFromApi(portfolioId) },
       body: orderBody as Record<string, unknown>,
     });
 
