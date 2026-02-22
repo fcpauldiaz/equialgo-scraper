@@ -33,6 +33,23 @@ export interface SchwabCredentials {
   accountNumber?: string;
 }
 
+export interface PortfolioListItem {
+  id: number;
+  name: string;
+  hasCredentials: boolean;
+}
+
+async function hasOldCredentialsSchema(db: ReturnType<typeof getClient>): Promise<boolean> {
+  try {
+    const result = await db.execute(
+      "SELECT id FROM schwab_credentials LIMIT 1"
+    );
+    return result.rows.length >= 0;
+  } catch {
+    return false;
+  }
+}
+
 export async function initializeDatabase(): Promise<void> {
   const db = getClient();
   try {
@@ -45,15 +62,18 @@ export async function initializeDatabase(): Promise<void> {
     `);
 
     await db.execute(`
-      CREATE TABLE IF NOT EXISTS schwab_credentials (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        access_token TEXT NOT NULL,
-        refresh_token TEXT NOT NULL,
-        redirect_uri TEXT,
-        account_number TEXT,
-        updated_at INTEGER
+      CREATE TABLE IF NOT EXISTS portfolios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        created_at INTEGER NOT NULL
       )
     `);
+
+    const now = Date.now();
+    await db.execute(
+      "INSERT OR IGNORE INTO portfolios (id, name, created_at) VALUES (1, ?, ?)",
+      ["Default", now]
+    );
 
     const result = await db.execute("SELECT COUNT(*) as count FROM state");
     const count = (result.rows[0]?.count as number) || 0;
@@ -62,6 +82,37 @@ export async function initializeDatabase(): Promise<void> {
       await db.execute(
         "INSERT INTO state (id, last_processed_date, last_processed_timestamp) VALUES (1, NULL, NULL)"
       );
+    }
+
+    const hasOldSchema = await hasOldCredentialsSchema(db);
+    if (hasOldSchema) {
+      await db.execute(`
+        CREATE TABLE IF NOT EXISTS schwab_credentials_new (
+          portfolio_id INTEGER PRIMARY KEY REFERENCES portfolios(id),
+          access_token TEXT NOT NULL,
+          refresh_token TEXT NOT NULL,
+          redirect_uri TEXT,
+          account_number TEXT,
+          updated_at INTEGER
+        )
+      `);
+      await db.execute(`
+        INSERT INTO schwab_credentials_new (portfolio_id, access_token, refresh_token, redirect_uri, account_number, updated_at)
+        SELECT 1, access_token, refresh_token, redirect_uri, account_number, updated_at FROM schwab_credentials WHERE id = 1
+      `);
+      await db.execute("DROP TABLE schwab_credentials");
+      await db.execute("ALTER TABLE schwab_credentials_new RENAME TO schwab_credentials");
+    } else {
+      await db.execute(`
+        CREATE TABLE IF NOT EXISTS schwab_credentials (
+          portfolio_id INTEGER PRIMARY KEY REFERENCES portfolios(id),
+          access_token TEXT NOT NULL,
+          refresh_token TEXT NOT NULL,
+          redirect_uri TEXT,
+          account_number TEXT,
+          updated_at INTEGER
+        )
+      `);
     }
 
     console.log("Database initialized successfully");
@@ -121,11 +172,83 @@ export function shouldProcess(date: string, state: State): boolean {
   return state.lastProcessedDate !== date;
 }
 
-export async function readSchwabCredentials(): Promise<SchwabCredentials | null> {
+export async function listPortfolios(): Promise<PortfolioListItem[]> {
   const db = getClient();
   try {
-    const result = await db.execute("SELECT * FROM schwab_credentials WHERE id = 1");
-    const row = result.rows[0] as { access_token?: string; refresh_token?: string; redirect_uri?: string; account_number?: string } | undefined;
+    const portfoliosResult = await db.execute(
+      "SELECT id, name FROM portfolios ORDER BY id"
+    );
+    const credsResult = await db.execute(
+      "SELECT portfolio_id FROM schwab_credentials"
+    );
+    const hasCreds = new Set(
+      (credsResult.rows as unknown as { portfolio_id: number }[]).map((r) => r.portfolio_id)
+    );
+    return (portfoliosResult.rows as unknown as { id: number; name: string }[]).map(
+      (row) => ({
+        id: row.id,
+        name: row.name,
+        hasCredentials: hasCreds.has(row.id),
+      })
+    );
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error("Error listing portfolios:", errorMessage);
+    throw error;
+  }
+}
+
+export async function createPortfolio(name: string): Promise<{ id: number }> {
+  const db = getClient();
+  const createdAt = Date.now();
+  try {
+    const result = await db.execute(
+      "INSERT INTO portfolios (name, created_at) VALUES (?, ?) RETURNING id",
+      [name, createdAt]
+    );
+    const row = result.rows[0] as unknown as { id: number };
+    if (!row?.id) {
+      throw new Error("Insert did not return id");
+    }
+    return { id: row.id };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error("Error creating portfolio:", errorMessage);
+    throw error;
+  }
+}
+
+export async function getPortfolioIdsWithCredentials(): Promise<number[]> {
+  const db = getClient();
+  try {
+    const result = await db.execute(
+      "SELECT portfolio_id FROM schwab_credentials"
+    );
+    return (result.rows as unknown as { portfolio_id: number }[]).map((r) => r.portfolio_id);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error("Error getting portfolio IDs with credentials:", errorMessage);
+    return [];
+  }
+}
+
+export async function readSchwabCredentials(
+  portfolioId: number
+): Promise<SchwabCredentials | null> {
+  const db = getClient();
+  try {
+    const result = await db.execute(
+      "SELECT * FROM schwab_credentials WHERE portfolio_id = ?",
+      [portfolioId]
+    );
+    const row = result.rows[0] as
+      | {
+          access_token?: string;
+          refresh_token?: string;
+          redirect_uri?: string;
+          account_number?: string;
+        }
+      | undefined;
     if (!row?.access_token || !row?.refresh_token) {
       return null;
     }
@@ -142,20 +265,24 @@ export async function readSchwabCredentials(): Promise<SchwabCredentials | null>
   }
 }
 
-export async function writeSchwabCredentials(creds: SchwabCredentials): Promise<void> {
+export async function writeSchwabCredentials(
+  portfolioId: number,
+  creds: SchwabCredentials
+): Promise<void> {
   const db = getClient();
   const updatedAt = Date.now();
   try {
     await db.execute(
-      `INSERT INTO schwab_credentials (id, access_token, refresh_token, redirect_uri, account_number, updated_at)
-       VALUES (1, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
+      `INSERT INTO schwab_credentials (portfolio_id, access_token, refresh_token, redirect_uri, account_number, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(portfolio_id) DO UPDATE SET
          access_token = excluded.access_token,
          refresh_token = excluded.refresh_token,
          redirect_uri = excluded.redirect_uri,
          account_number = excluded.account_number,
          updated_at = excluded.updated_at`,
       [
+        portfolioId,
         creds.accessToken,
         creds.refreshToken,
         creds.redirectUri ?? null,

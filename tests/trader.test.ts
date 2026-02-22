@@ -18,9 +18,12 @@ jest.mock('@sudowealth/schwab-api', () => {
   };
 });
 
+const mockReadSchwabCredentials = jest.fn().mockResolvedValue(null);
+const mockWriteSchwabCredentials = jest.fn().mockResolvedValue(undefined);
+
 jest.mock('../src/state', () => ({
-  readSchwabCredentials: jest.fn().mockResolvedValue(null),
-  writeSchwabCredentials: jest.fn().mockResolvedValue(undefined),
+  readSchwabCredentials: (...args: unknown[]) => mockReadSchwabCredentials(...args),
+  writeSchwabCredentials: (...args: unknown[]) => mockWriteSchwabCredentials(...args),
 }));
 
 describe('Trader', () => {
@@ -72,7 +75,7 @@ describe('Trader', () => {
         orderId: '12345',
       });
 
-      const result = await executeTradesFromActions(actions);
+      const result = await executeTradesFromActions(actions, 1);
 
       expect(result.successful).toHaveLength(1);
       expect(result.failed).toHaveLength(0);
@@ -112,7 +115,7 @@ describe('Trader', () => {
         orderId: '67890',
       });
 
-      const result = await executeTradesFromActions(actions);
+      const result = await executeTradesFromActions(actions, 1);
 
       expect(result.successful).toHaveLength(1);
       expect(result.failed).toHaveLength(0);
@@ -155,14 +158,14 @@ describe('Trader', () => {
       });
 
       const { executeTradesFromActions: executeTrades } = await import('../src/trader');
-      const result = await executeTrades(actions);
+      const result = await executeTrades(actions, 1);
 
       expect(result.successful.length).toBeGreaterThanOrEqual(0);
       const callArgs = mockSchwabClient.trader.orders.placeOrderForAccount.mock.calls[0];
       if (callArgs && callArgs[0]?.body) {
         expect(['MARKET', 'LIMIT']).toContain(callArgs[0].body.orderType);
       }
-      
+
       process.env.SCHWAB_ORDER_TYPE = originalOrderType;
     });
 
@@ -176,7 +179,7 @@ describe('Trader', () => {
       ];
 
       const { executeTradesFromActions: executeTrades } = await import('../src/trader');
-      const result = await executeTrades(actions);
+      const result = await executeTrades(actions, 1);
 
       expect(result.successful).toHaveLength(0);
       expect(result.failed).toHaveLength(0);
@@ -194,7 +197,7 @@ describe('Trader', () => {
         .mockRejectedValueOnce(new Error('Insufficient funds'))
         .mockResolvedValueOnce({ orderId: '67890' });
 
-      const result = await executeTradesFromActions(actions);
+      const result = await executeTradesFromActions(actions, 1);
 
       expect(result.successful).toHaveLength(1);
       expect(result.failed).toHaveLength(1);
@@ -211,6 +214,11 @@ describe('Trader', () => {
     });
 
     it('should handle API errors gracefully with token expiration', async () => {
+      mockReadSchwabCredentials.mockResolvedValue({
+        accessToken: 'test-access-token',
+        refreshToken: 'test-refresh-token',
+        redirectUri: 'https://127.0.0.1:8765/callback',
+      });
       const { executeTradesFromActions } = await import('../src/trader');
       const actions: PortfolioAction[] = [
         { symbol: 'AAPL', action: 'BUY', shares: 10, price: 150.50 },
@@ -221,17 +229,18 @@ describe('Trader', () => {
         name: 'SchwabAuthError',
       });
       mockSchwabClient.trader.orders.placeOrderForAccount
-        .mockRejectedValueOnce(authError);
+        .mockRejectedValueOnce(authError)
+        .mockResolvedValueOnce({ orderId: 'after-refresh' });
 
       mockAuth.refresh.mockResolvedValue({
         accessToken: 'new-access-token',
         refreshToken: 'new-refresh-token',
       });
 
-      const result = await executeTradesFromActions(actions);
+      const result = await executeTradesFromActions(actions, 1);
 
-      expect(result.failed.length).toBeGreaterThanOrEqual(0);
-      expect(result.successful.length).toBeGreaterThanOrEqual(0);
+      expect(result.successful).toHaveLength(1);
+      expect(result.successful[0].orderId).toBe('after-refresh');
     });
 
     it('should validate share quantity', async () => {
@@ -241,7 +250,7 @@ describe('Trader', () => {
         { symbol: 'MSFT', action: 'BUY', shares: -5, price: 300.25 },
       ];
 
-      const result = await executeTradesFromActions(actions);
+      const result = await executeTradesFromActions(actions, 1);
 
       expect(result.failed).toHaveLength(2);
       expect(result.failed.every(f => !f.success)).toBe(true);
@@ -250,7 +259,7 @@ describe('Trader', () => {
 
     it('should handle empty actions array', async () => {
       const { executeTradesFromActions } = await import('../src/trader');
-      const result = await executeTradesFromActions([]);
+      const result = await executeTradesFromActions([], 1);
 
       expect(result.successful).toHaveLength(0);
       expect(result.failed).toHaveLength(0);
@@ -270,7 +279,7 @@ describe('Trader', () => {
         .mockResolvedValueOnce({ orderId: '2' })
         .mockResolvedValueOnce({ orderId: '3' });
 
-      const result = await executeTradesFromActions(actions);
+      const result = await executeTradesFromActions(actions, 1);
 
       expect(result.successful).toHaveLength(3);
       expect(result.failed).toHaveLength(0);
@@ -286,8 +295,8 @@ describe('Trader', () => {
       ];
 
       const { executeTradesFromActions: executeTrades } = await import('../src/trader');
-      
-      await expect(executeTrades(actions)).rejects.toThrow('SCHWAB_ACCOUNT_NUMBER');
+
+      await expect(executeTrades(actions, 1)).rejects.toThrow('SCHWAB_ACCOUNT_NUMBER');
     });
   });
 });

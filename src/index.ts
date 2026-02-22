@@ -9,7 +9,9 @@ import {
   writeState,
   shouldProcess,
   initializeDatabase,
+  getPortfolioIdsWithCredentials,
 } from "./state";
+import { startUiServer } from "./ui-server";
 
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE || "0 9 * * *";
 
@@ -53,10 +55,24 @@ async function runCheck(): Promise<void> {
       );
     }
 
-    const tradeSummary = await executeTradesFromActions(scaledActions);
-    console.log(
-      `Trade execution: ${tradeSummary.successful.length} successful, ${tradeSummary.failed.length} failed, ${tradeSummary.skipped.length} skipped`
-    );
+    let portfolioIds = await getPortfolioIdsWithCredentials();
+    const filterEnv = process.env.PORTFOLIO_IDS;
+    if (filterEnv) {
+      const allowed = new Set(
+        filterEnv.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n))
+      );
+      portfolioIds = portfolioIds.filter((id) => allowed.has(id));
+    }
+    if (portfolioIds.length === 0) {
+      console.log("No portfolios with Schwab credentials; skipping trade execution.");
+    } else {
+      for (const portfolioId of portfolioIds) {
+        const tradeSummary = await executeTradesFromActions(scaledActions, portfolioId);
+        console.log(
+          `Portfolio ${portfolioId}: ${tradeSummary.successful.length} successful, ${tradeSummary.failed.length} failed, ${tradeSummary.skipped.length} skipped`
+        );
+      }
+    }
 
     const processedSignals = processedSignalsFromActions(scrapedData);
     await sendNotification(processedSignals);
@@ -83,6 +99,8 @@ async function main(): Promise<void> {
     console.error("Failed to initialize database:", errorMessage);
     process.exit(1);
   }
+
+  startUiServer();
 
   cron.schedule(CRON_SCHEDULE, async () => {
     await runCheck();

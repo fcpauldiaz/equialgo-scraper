@@ -70,6 +70,9 @@ Configuration is done via environment variables. Create a `.env` file in the pro
 | `SCHWAB_REFRESH_TOKEN` | *Optional* | Schwab refresh token (if using stored tokens) |
 | `SCHWAB_ORDER_TYPE` | `MARKET` | Order type: `MARKET` or `LIMIT` |
 | `SCHWAB_ENABLE_TRADING` | `false` | Enable/disable automatic trading (safety flag) |
+| `UI_PORT` | `3000` | Port for the admin UI (portfolios and Schwab login) |
+| `PORTFOLIO_IDS` | *(all)* | Comma-separated portfolio IDs to run trades for (e.g. `1,2`); if unset, all portfolios with credentials are used |
+| `SCHWAB_REDIRECT_PORT` | `8765` | Port for OAuth callback (HTTPS); callback URL is `https://127.0.0.1:8765/callback` |
 
 ### Example .env File
 
@@ -146,7 +149,16 @@ The service will:
 
 ### Running in Docker or on a server (no bundled Chrome)
 
-On minimal or containerized environments, Puppeteer’s bundled Chrome often isn’t installed. Use a system Chrome/Chromium and point the app to it:
+The Docker image includes the **admin UI** (portfolios and Schwab login). Publish port **3000** so the UI is reachable:
+
+```bash
+docker build -t equialgo-scraper .
+docker run --init -p 3000:3000 --env-file .env equialgo-scraper
+```
+
+The UI is available at `http://localhost:3000` (or `http://<host>:3000` on a remote server). If you set `UI_PORT` to another value inside the container, map that port instead (e.g. `-p 8080:8080` when `UI_PORT=8080`).
+
+On minimal or containerized environments (without Docker), Puppeteer’s bundled Chrome often isn’t installed. Use a system Chrome/Chromium and point the app to it:
 
 1. **Install Chromium** (Debian/Ubuntu example):
    ```bash
@@ -189,30 +201,57 @@ pm2 startup
 
 ## Schwab API Setup
 
-### Option A: OAuth login script (recommended)
+The project supports **multiple portfolios**, each linked to a different Schwab account. Credentials are stored in the database (table `schwab_credentials`), not in `.env`.
 
-Credentials are stored in the **database** (table `schwab_credentials`), not in `.env`.
+### Option A: Admin UI (recommended)
 
-1. **In `.env`** set only:
+When the service is running, an admin UI is available for adding portfolios and linking each to a Schwab account via OAuth.
+
+1. **In `.env`** set:
    - `SCHWAB_CLIENT_ID`
    - `SCHWAB_CLIENT_SECRET`
+   - `DATABASE_URL` and `DATABASE_AUTH_TOKEN`
 
 2. **In your [Schwab app](https://developer.schwab.com/dashboard/apps)** add this callback URL:
-   - `http://localhost:8765/callback`
+   - `https://127.0.0.1:8765/callback`
 
-3. **Run the login script** (build first, then run):
+3. **Start the service** (build first):
+   ```bash
+   pnpm run build && pnpm start
+   ```
+
+4. **Build the admin UI** (React + TanStack Query, once or after UI changes):
+   ```bash
+   pnpm run build:ui
+   ```
+
+5. **Open the admin UI** in your browser (default: `http://localhost:3000`).
+   - Add one or more portfolios (e.g. "Default", "IRA").
+   - For each portfolio, click **Login with Schwab**. A new window opens for Schwab sign-in; after you authorize, tokens and account number are saved for that portfolio.
+   - Use **Verify** to confirm the connection.
+
+6. The daily cron runs one scrape and executes the same actions for **every portfolio that has credentials**. Optionally set `PORTFOLIO_IDS=1,2` to limit which portfolios are used.
+
+### Option B: CLI login script (single default portfolio)
+
+For the default portfolio (id 1) you can still use the command-line login:
+
+1. **In `.env`** set `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET`, `DATABASE_URL`, `DATABASE_AUTH_TOKEN`.
+
+2. **Callback URL** in your Schwab app: `https://127.0.0.1:8765/callback`
+
+3. **Run** (build first, then run):
    ```bash
    pnpm run build && pnpm run schwab-login
    ```
-   - A browser opens for Schwab login; after you sign in, tokens and account number are written to the database (table `schwab_credentials`).
-   - The app will use them automatically (no need to copy tokens into `.env`).
+   - A browser opens for Schwab login; after you sign in, tokens and account number are written for the default portfolio (id 1).
 
 4. **Verify** the connection:
    ```bash
    pnpm run verify:schwab
    ```
 
-### Option B: Manual / .env only
+### Option C: Manual / .env only
 
 To enable automatic trading with env vars only:
 

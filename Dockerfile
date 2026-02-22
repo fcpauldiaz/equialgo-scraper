@@ -38,10 +38,17 @@ RUN pnpm install --frozen-lockfile
 # Build the app
 COPY tsconfig.json ./
 COPY src ./src
+COPY ui ./ui
+RUN cd ui && pnpm install --frozen-lockfile && pnpm run build
+RUN rm -rf ui/node_modules ui/src ui/package.json ui/pnpm-lock.yaml ui/tsconfig.json ui/tsconfig.node.json ui/tsconfig.tsbuildinfo ui/vite.config.ts ui/index.html
 RUN pnpm run build
 
 # Drop devDependencies to shrink image (optional; comment out if you need them at runtime)
 RUN pnpm prune --prod
+
+EXPOSE 3000
+
+RUN chown -R node:node /app
 
 # Run as non-root if possible (Chromium may need specific permissions; use --cap-add=SYS_ADMIN if needed)
 USER node

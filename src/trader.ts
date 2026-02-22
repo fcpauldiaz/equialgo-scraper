@@ -40,15 +40,15 @@ function isSchwabAuthError(error: any): boolean {
 const ENABLE_TRADING = process.env.SCHWAB_ENABLE_TRADING === "true";
 const ORDER_TYPE = (process.env.SCHWAB_ORDER_TYPE || "MARKET") as "MARKET" | "LIMIT";
 
-async function getAccountNumber(): Promise<string | undefined> {
+async function getAccountNumber(portfolioId: number): Promise<string | undefined> {
   if (process.env.SCHWAB_ACCOUNT_NUMBER) {
     return process.env.SCHWAB_ACCOUNT_NUMBER;
   }
-  const creds = await readSchwabCredentials();
+  const creds = await readSchwabCredentials(portfolioId);
   return creds?.accountNumber;
 }
 
-let schwabClient: SchwabApiClient | null = null;
+const schwabClientByPortfolio = new Map<number, SchwabApiClient>();
 
 interface Position {
   symbol: string;
@@ -56,14 +56,15 @@ interface Position {
   shortQuantity: number;
 }
 
-async function initializeSchwabClient(): Promise<SchwabApiClient> {
-  if (schwabClient) {
-    return schwabClient;
+async function initializeSchwabClient(portfolioId: number): Promise<SchwabApiClient> {
+  const cached = schwabClientByPortfolio.get(portfolioId);
+  if (cached) {
+    return cached;
   }
 
   const clientId = process.env.SCHWAB_CLIENT_ID;
   const clientSecret = process.env.SCHWAB_CLIENT_SECRET;
-  const credentialsFromDb = await readSchwabCredentials();
+  const credentialsFromDb = await readSchwabCredentials(portfolioId);
   const redirectUri =
     process.env.SCHWAB_REDIRECT_URI ||
     credentialsFromDb?.redirectUri ||
@@ -75,7 +76,7 @@ async function initializeSchwabClient(): Promise<SchwabApiClient> {
     );
   }
 
-  const accountNumber = await getAccountNumber();
+  const accountNumber = await getAccountNumber(portfolioId);
   if (!accountNumber) {
     throw new Error(
       "SCHWAB_ACCOUNT_NUMBER is required: set it in .env or run 'pnpm run schwab-login' to save credentials to the database"
@@ -96,7 +97,7 @@ async function initializeSchwabClient(): Promise<SchwabApiClient> {
         if (accessToken && refreshToken) {
           return { accessToken, refreshToken };
         }
-        const creds = await readSchwabCredentials();
+        const creds = await readSchwabCredentials(portfolioId);
         if (creds?.accessToken && creds?.refreshToken) {
           process.env.SCHWAB_ACCESS_TOKEN = creds.accessToken;
           process.env.SCHWAB_REFRESH_TOKEN = creds.refreshToken;
@@ -113,8 +114,8 @@ async function initializeSchwabClient(): Promise<SchwabApiClient> {
           process.env.SCHWAB_REFRESH_TOKEN = tokens.refreshToken;
         }
         try {
-          const current = await readSchwabCredentials();
-          await writeSchwabCredentials({
+          const current = await readSchwabCredentials(portfolioId);
+          await writeSchwabCredentials(portfolioId, {
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken ?? current?.refreshToken ?? "",
             redirectUri: current?.redirectUri,
@@ -127,7 +128,7 @@ async function initializeSchwabClient(): Promise<SchwabApiClient> {
     },
   });
 
-  schwabClient = createApiClient({
+  const client = createApiClient({
     auth,
     middleware: {
       rateLimit: { maxRequests: 120, windowMs: 60_000 },
@@ -135,38 +136,44 @@ async function initializeSchwabClient(): Promise<SchwabApiClient> {
     },
   });
 
-  return schwabClient;
+  schwabClientByPortfolio.set(portfolioId, client);
+  return client;
 }
 
-async function refreshTokensIfNeeded() {
-  const refreshToken = process.env.SCHWAB_REFRESH_TOKEN;
+async function refreshTokensIfNeeded(portfolioId: number): Promise<TokenData> {
+  const creds = await readSchwabCredentials(portfolioId);
+  const refreshToken = creds?.refreshToken ?? process.env.SCHWAB_REFRESH_TOKEN;
   if (!refreshToken) {
     throw new Error("SCHWAB_REFRESH_TOKEN is required for token refresh");
   }
 
   const schwabApi = await getSchwabApiModule();
   const { createSchwabAuth } = schwabApi;
+  const redirectUri =
+    process.env.SCHWAB_REDIRECT_URI ??
+    creds?.redirectUri ??
+    "https://127.0.0.1:8765/callback";
 
   const auth = createSchwabAuth({
     oauthConfig: {
       clientId: process.env.SCHWAB_CLIENT_ID!,
       clientSecret: process.env.SCHWAB_CLIENT_SECRET!,
-      redirectUri: process.env.SCHWAB_REDIRECT_URI!,
+      redirectUri,
       load: async (): Promise<TokenData | null> => {
-        const accessToken = process.env.SCHWAB_ACCESS_TOKEN;
-        if (accessToken && refreshToken) {
-          return {
-            accessToken,
-            refreshToken,
-          };
+        const c = await readSchwabCredentials(portfolioId);
+        if (c?.accessToken && c?.refreshToken) {
+          return { accessToken: c.accessToken, refreshToken: c.refreshToken };
         }
         return null;
       },
       save: async (tokens: TokenData): Promise<void> => {
-        process.env.SCHWAB_ACCESS_TOKEN = tokens.accessToken;
-        if (tokens.refreshToken) {
-          process.env.SCHWAB_REFRESH_TOKEN = tokens.refreshToken;
-        }
+        const current = await readSchwabCredentials(portfolioId);
+        await writeSchwabCredentials(portfolioId, {
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken ?? current?.refreshToken ?? "",
+          redirectUri: current?.redirectUri,
+          accountNumber: current?.accountNumber,
+        });
       },
     },
   });
@@ -174,13 +181,17 @@ async function refreshTokensIfNeeded() {
   try {
     const newTokens = await auth.refresh(refreshToken);
     console.log("Tokens refreshed successfully");
-    if (newTokens.refreshToken) {
-      process.env.SCHWAB_ACCESS_TOKEN = newTokens.accessToken;
-      process.env.SCHWAB_REFRESH_TOKEN = newTokens.refreshToken;
-    }
+    const current = await readSchwabCredentials(portfolioId);
+    await writeSchwabCredentials(portfolioId, {
+      accessToken: newTokens.accessToken,
+      refreshToken: newTokens.refreshToken ?? current?.refreshToken ?? "",
+      redirectUri: current?.redirectUri,
+      accountNumber: current?.accountNumber,
+    });
+    schwabClientByPortfolio.delete(portfolioId);
     return newTokens;
-  } catch (error: any) {
-    if (isSchwabAuthError(error) && error.code === "TOKEN_EXPIRED") {
+  } catch (error: unknown) {
+    if (isSchwabAuthError(error) && (error as { code?: string }).code === "TOKEN_EXPIRED") {
       throw new Error(
         "Refresh token expired. Please re-authenticate through Schwab's OAuth flow."
       );
@@ -189,20 +200,22 @@ async function refreshTokensIfNeeded() {
   }
 }
 
-async function getCurrentPositions(): Promise<Map<string, Position>> {
-  const schwab = await initializeSchwabClient();
+async function getCurrentPositions(
+  portfolioId: number
+): Promise<Map<string, Position>> {
+  const schwab = await initializeSchwabClient(portfolioId);
   const positionsMap = new Map<string, Position>();
 
   try {
     const account = await schwab.trader.accounts.getAccountByNumber({
-      pathParams: { accountNumber: (await getAccountNumber())! },
+      pathParams: { accountNumber: (await getAccountNumber(portfolioId))! },
       queryParams: { fields: "positions" },
     });
 
     if (account.securitiesAccount?.positions && Array.isArray(account.securitiesAccount.positions)) {
       for (const position of account.securitiesAccount.positions) {
         if (position.instrument?.symbol) {
-          const longQuantity = (position as any).longQuantity || 0;
+          const longQuantity = (position as { longQuantity?: number }).longQuantity || 0;
           const shortQuantity = position.shortQuantity || 0;
           positionsMap.set(position.instrument.symbol, {
             symbol: position.instrument.symbol,
@@ -212,12 +225,10 @@ async function getCurrentPositions(): Promise<Map<string, Position>> {
         }
       }
     }
-  } catch (error: any) {
-    if (isSchwabAuthError(error)) {
-      if (error.code === "TOKEN_EXPIRED") {
-        await refreshTokensIfNeeded();
-        return getCurrentPositions();
-      }
+  } catch (error: unknown) {
+    if (isSchwabAuthError(error) && (error as { code?: string }).code === "TOKEN_EXPIRED") {
+      await refreshTokensIfNeeded(portfolioId);
+      return getCurrentPositions(portfolioId);
     }
     console.error("Error fetching positions:", error);
     throw error;
@@ -226,15 +237,14 @@ async function getCurrentPositions(): Promise<Map<string, Position>> {
   return positionsMap;
 }
 
-/** Read-only verification: initializes the Schwab client and fetches account positions. Use to verify env and tokens. */
-export async function verifySchwabConnection(): Promise<{
+export async function verifySchwabConnection(portfolioId: number): Promise<{
   ok: boolean;
   message: string;
   positionsCount?: number;
 }> {
   try {
-    await initializeSchwabClient();
-    const positions = await getCurrentPositions();
+    await initializeSchwabClient(portfolioId);
+    const positions = await getCurrentPositions(portfolioId);
     return {
       ok: true,
       message: "Schwab API connected",
@@ -247,6 +257,7 @@ export async function verifySchwabConnection(): Promise<{
 }
 
 async function placeBuyOrder(
+  portfolioId: number,
   symbol: string,
   shares: number,
   price: number
@@ -273,7 +284,7 @@ async function placeBuyOrder(
     };
   }
 
-  const schwab = await initializeSchwabClient();
+  const schwab = await initializeSchwabClient(portfolioId);
 
   try {
     const orderBody: {
@@ -312,8 +323,8 @@ async function placeBuyOrder(
     }
 
     const response = await schwab.trader.orders.placeOrderForAccount({
-      pathParams: { accountNumber: (await getAccountNumber())! },
-      body: orderBody as any,
+      pathParams: { accountNumber: (await getAccountNumber(portfolioId))! },
+      body: orderBody as Record<string, unknown>,
     });
 
     return {
@@ -324,12 +335,10 @@ async function placeBuyOrder(
       success: true,
       orderId: response.orderId?.toString(),
     };
-  } catch (error: any) {
-    if (isSchwabAuthError(error)) {
-      if (error.code === "TOKEN_EXPIRED") {
-        await refreshTokensIfNeeded();
-        return placeBuyOrder(symbol, shares, price);
-      }
+  } catch (error: unknown) {
+    if (isSchwabAuthError(error) && (error as { code?: string }).code === "TOKEN_EXPIRED") {
+      await refreshTokensIfNeeded(portfolioId);
+      return placeBuyOrder(portfolioId, symbol, shares, price);
     }
 
     const errorMessage =
@@ -348,6 +357,7 @@ async function placeBuyOrder(
 }
 
 async function placeSellOrder(
+  portfolioId: number,
   symbol: string,
   shares: number,
   price: number
@@ -374,7 +384,7 @@ async function placeSellOrder(
     };
   }
 
-  const schwab = await initializeSchwabClient();
+  const schwab = await initializeSchwabClient(portfolioId);
 
   try {
     const orderBody: {
@@ -413,8 +423,8 @@ async function placeSellOrder(
     }
 
     const response = await schwab.trader.orders.placeOrderForAccount({
-      pathParams: { accountNumber: (await getAccountNumber())! },
-      body: orderBody as any,
+      pathParams: { accountNumber: (await getAccountNumber(portfolioId))! },
+      body: orderBody as Record<string, unknown>,
     });
 
     return {
@@ -425,12 +435,10 @@ async function placeSellOrder(
       success: true,
       orderId: response.orderId?.toString(),
     };
-  } catch (error: any) {
-    if (isSchwabAuthError(error)) {
-      if (error.code === "TOKEN_EXPIRED") {
-        await refreshTokensIfNeeded();
-        return placeSellOrder(symbol, shares, price);
-      }
+  } catch (error: unknown) {
+    if (isSchwabAuthError(error) && (error as { code?: string }).code === "TOKEN_EXPIRED") {
+      await refreshTokensIfNeeded(portfolioId);
+      return placeSellOrder(portfolioId, symbol, shares, price);
     }
 
     const errorMessage =
@@ -449,6 +457,7 @@ async function placeSellOrder(
 }
 
 export async function executeTrades(
+  portfolioId: number,
   signals: ProcessedSignals
 ): Promise<TradeExecutionSummary> {
   const summary: TradeExecutionSummary = {
@@ -466,7 +475,7 @@ export async function executeTrades(
 
   let positions: Map<string, Position>;
   try {
-    positions = await getCurrentPositions();
+    positions = await getCurrentPositions(portfolioId);
     console.log(`Fetched ${positions.size} current positions`);
   } catch (error) {
     const errorMessage =
@@ -494,6 +503,7 @@ export async function executeTrades(
     }
 
     const result = await placeBuyOrder(
+      portfolioId,
       signal.symbol,
       signal.shares,
       signal.current_price
@@ -525,6 +535,7 @@ export async function executeTrades(
     const sharesToSell = position.longQuantity;
 
     const result = await placeSellOrder(
+      portfolioId,
       signal.symbol,
       sharesToSell,
       signal.current_price
@@ -551,7 +562,8 @@ export async function executeTrades(
 }
 
 export async function executeTradesFromActions(
-  actions: PortfolioAction[]
+  actions: PortfolioAction[],
+  portfolioId: number
 ): Promise<TradeExecutionSummary> {
   const summary: TradeExecutionSummary = {
     successful: [],
@@ -569,13 +581,13 @@ export async function executeTradesFromActions(
     return summary;
   }
 
-  console.log(`Executing ${actions.length} trades from scraped actions...`);
+  console.log(`Executing ${actions.length} trades from scraped actions (portfolio ${portfolioId})...`);
 
   for (const action of actions) {
     const result =
       action.action === "BUY"
-        ? await placeBuyOrder(action.symbol, action.shares, action.price)
-        : await placeSellOrder(action.symbol, action.shares, action.price);
+        ? await placeBuyOrder(portfolioId, action.symbol, action.shares, action.price)
+        : await placeSellOrder(portfolioId, action.symbol, action.shares, action.price);
 
     if (result.success) {
       summary.successful.push(result);
