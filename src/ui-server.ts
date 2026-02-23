@@ -5,9 +5,11 @@ import {
   listPortfolios,
   createPortfolio,
   readState,
+  writeTradierCredentials,
 } from "./state";
 import { startSchwabLoginFlow, isSchwabLoginInProgress } from "./schwab-oauth";
-import { verifySchwabConnection, getPortfolioPositions } from "./trader";
+import { getTradierAccountId } from "./tradier-client";
+import { verifyConnection, getPortfolioPositions } from "./trader";
 
 const UI_PORT = parseInt(process.env.UI_PORT || "3000", 10);
 
@@ -163,11 +165,47 @@ export function startUiServer(): http.Server {
     if (verifyMatch && method === "GET") {
       const portfolioId = parseInt(verifyMatch[1], 10);
       try {
-        const result = await verifySchwabConnection(portfolioId);
+        const result = await verifyConnection(portfolioId);
         sendJson(res, 200, result);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         sendJson(res, 500, { ok: false, message });
+      }
+      return;
+    }
+
+    if (pathname === "/api/tradier/connect" && method === "POST") {
+      try {
+        const body = await parseBody(req);
+        const portfolioId =
+          typeof body.portfolioId === "number"
+            ? body.portfolioId
+            : parseInt(String(body.portfolioId ?? ""), 10);
+        const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+        const sandbox = Boolean(body.sandbox);
+        if (Number.isNaN(portfolioId) || portfolioId <= 0) {
+          sendJson(res, 400, { error: "portfolioId is required" });
+          return;
+        }
+        if (!apiKey) {
+          sendJson(res, 400, { error: "apiKey is required" });
+          return;
+        }
+        const portfolios = await listPortfolios();
+        if (!portfolios.some((p) => p.id === portfolioId)) {
+          sendJson(res, 404, { error: "Portfolio not found" });
+          return;
+        }
+        const accountId = await getTradierAccountId(apiKey, sandbox);
+        await writeTradierCredentials(portfolioId, {
+          apiKey,
+          accountId,
+          sandbox,
+        });
+        sendJson(res, 200, { ok: true });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        sendJson(res, 400, { error: message });
       }
       return;
     }

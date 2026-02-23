@@ -1,7 +1,10 @@
+export type PortfolioBrokerage = "schwab" | "tradier" | null;
+
 export interface PortfolioItem {
   id: number;
   name: string;
   hasCredentials: boolean;
+  brokerage: PortfolioBrokerage;
 }
 
 export async function fetchPortfolios(): Promise<PortfolioItem[]> {
@@ -37,6 +40,23 @@ export async function startSchwabLogin(portfolioId: number): Promise<{ authUrl: 
     throw new Error(text || r.statusText);
   }
   return r.json();
+}
+
+export async function connectTradier(
+  portfolioId: number,
+  apiKey: string,
+  sandbox?: boolean
+): Promise<{ ok: boolean }> {
+  const r = await fetch("/api/tradier/connect", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ portfolioId, apiKey, sandbox }),
+  });
+  const data = await r.json().catch(() => ({})) as { ok?: boolean; error?: string };
+  if (!r.ok) {
+    throw new Error(data.error || r.statusText);
+  }
+  return { ok: data.ok ?? true };
 }
 
 export interface VerifyResult {

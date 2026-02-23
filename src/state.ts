@@ -33,10 +33,19 @@ export interface SchwabCredentials {
   accountNumber?: string;
 }
 
+export interface TradierCredentials {
+  apiKey: string;
+  accountId?: string;
+  sandbox: boolean;
+}
+
+export type PortfolioBrokerage = "schwab" | "tradier" | null;
+
 export interface PortfolioListItem {
   id: number;
   name: string;
   hasCredentials: boolean;
+  brokerage: PortfolioBrokerage;
 }
 
 async function hasOldCredentialsSchema(db: ReturnType<typeof getClient>): Promise<boolean> {
@@ -115,6 +124,16 @@ export async function initializeDatabase(): Promise<void> {
       `);
     }
 
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS tradier_credentials (
+        portfolio_id INTEGER PRIMARY KEY REFERENCES portfolios(id),
+        api_key TEXT NOT NULL,
+        account_id TEXT,
+        sandbox INTEGER NOT NULL,
+        updated_at INTEGER
+      )
+    `);
+
     console.log("Database initialized successfully");
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -178,18 +197,31 @@ export async function listPortfolios(): Promise<PortfolioListItem[]> {
     const portfoliosResult = await db.execute(
       "SELECT id, name FROM portfolios ORDER BY id"
     );
-    const credsResult = await db.execute(
-      "SELECT portfolio_id FROM schwab_credentials"
+    const schwabIds = await db.execute("SELECT portfolio_id FROM schwab_credentials");
+    const tradierIds = await db.execute("SELECT portfolio_id FROM tradier_credentials");
+    const schwabSet = new Set(
+      (schwabIds.rows as unknown as { portfolio_id: number }[]).map((r) => r.portfolio_id)
     );
-    const hasCreds = new Set(
-      (credsResult.rows as unknown as { portfolio_id: number }[]).map((r) => r.portfolio_id)
+    const tradierSet = new Set(
+      (tradierIds.rows as unknown as { portfolio_id: number }[]).map((r) => r.portfolio_id)
     );
     return (portfoliosResult.rows as unknown as { id: number; name: string }[]).map(
-      (row) => ({
-        id: row.id,
-        name: row.name,
-        hasCredentials: hasCreds.has(row.id),
-      })
+      (row) => {
+        const hasSchwab = schwabSet.has(row.id);
+        const hasTradier = tradierSet.has(row.id);
+        const hasCredentials = hasSchwab || hasTradier;
+        const brokerage: PortfolioBrokerage = hasSchwab
+          ? "schwab"
+          : hasTradier
+            ? "tradier"
+            : null;
+        return {
+          id: row.id,
+          name: row.name,
+          hasCredentials,
+          brokerage,
+        };
+      }
     );
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -221,10 +253,16 @@ export async function createPortfolio(name: string): Promise<{ id: number }> {
 export async function getPortfolioIdsWithCredentials(): Promise<number[]> {
   const db = getClient();
   try {
-    const result = await db.execute(
-      "SELECT portfolio_id FROM schwab_credentials"
-    );
-    return (result.rows as unknown as { portfolio_id: number }[]).map((r) => r.portfolio_id);
+    const schwab = await db.execute("SELECT portfolio_id FROM schwab_credentials");
+    const tradier = await db.execute("SELECT portfolio_id FROM tradier_credentials");
+    const ids = new Set<number>();
+    for (const row of schwab.rows as unknown as { portfolio_id: number }[]) {
+      ids.add(row.portfolio_id);
+    }
+    for (const row of tradier.rows as unknown as { portfolio_id: number }[]) {
+      ids.add(row.portfolio_id);
+    }
+    return Array.from(ids);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error("Error getting portfolio IDs with credentials:", errorMessage);
@@ -272,6 +310,7 @@ export async function writeSchwabCredentials(
   const db = getClient();
   const updatedAt = Date.now();
   try {
+    await db.execute("DELETE FROM tradier_credentials WHERE portfolio_id = ?", [portfolioId]);
     await db.execute(
       `INSERT INTO schwab_credentials (portfolio_id, access_token, refresh_token, redirect_uri, account_number, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)
@@ -293,6 +332,74 @@ export async function writeSchwabCredentials(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error("Error writing Schwab credentials to database:", errorMessage);
+    throw error;
+  }
+}
+
+export async function getPortfolioBrokerage(
+  portfolioId: number
+): Promise<PortfolioBrokerage> {
+  const hasSchwab = await readSchwabCredentials(portfolioId);
+  if (hasSchwab) return "schwab";
+  const hasTradier = await readTradierCredentials(portfolioId);
+  if (hasTradier) return "tradier";
+  return null;
+}
+
+export async function readTradierCredentials(
+  portfolioId: number
+): Promise<TradierCredentials | null> {
+  const db = getClient();
+  try {
+    const result = await db.execute(
+      "SELECT api_key, account_id, sandbox FROM tradier_credentials WHERE portfolio_id = ?",
+      [portfolioId]
+    );
+    const row = result.rows[0] as
+      | { api_key?: string; account_id?: string; sandbox?: number }
+      | undefined;
+    if (!row?.api_key?.trim()) {
+      return null;
+    }
+    return {
+      apiKey: row.api_key,
+      accountId: row.account_id ?? undefined,
+      sandbox: row.sandbox === 1,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error("Error reading Tradier credentials from database:", errorMessage);
+    return null;
+  }
+}
+
+export async function writeTradierCredentials(
+  portfolioId: number,
+  creds: TradierCredentials
+): Promise<void> {
+  const db = getClient();
+  const updatedAt = Date.now();
+  try {
+    await db.execute("DELETE FROM schwab_credentials WHERE portfolio_id = ?", [portfolioId]);
+    await db.execute(
+      `INSERT INTO tradier_credentials (portfolio_id, api_key, account_id, sandbox, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(portfolio_id) DO UPDATE SET
+         api_key = excluded.api_key,
+         account_id = excluded.account_id,
+         sandbox = excluded.sandbox,
+         updated_at = excluded.updated_at`,
+      [
+        portfolioId,
+        creds.apiKey,
+        creds.accountId ?? null,
+        creds.sandbox ? 1 : 0,
+        updatedAt,
+      ]
+    );
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error("Error writing Tradier credentials to database:", errorMessage);
     throw error;
   }
 }

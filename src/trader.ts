@@ -1,8 +1,16 @@
 import {
   readSchwabCredentials,
   writeSchwabCredentials,
+  readTradierCredentials,
+  writeTradierCredentials,
+  getPortfolioBrokerage,
   type SchwabCredentials,
 } from "./state";
+import {
+  getTradierAccountId,
+  getTradierPositions,
+  placeTradierOrder,
+} from "./tradier-client";
 import {
   ProcessedSignals,
   TradeExecutionResult,
@@ -39,9 +47,27 @@ function isSchwabAuthError(error: any): boolean {
 
 const ENABLE_TRADING = process.env.SCHWAB_ENABLE_TRADING === "true";
 const ORDER_TYPE = (process.env.SCHWAB_ORDER_TYPE || "MARKET") as "MARKET" | "LIMIT";
+const TRADIER_ENABLE_TRADING = process.env.TRADIER_ENABLE_TRADING === "true";
+const TRADIER_ORDER_TYPE = (process.env.TRADIER_ORDER_TYPE || "market") as "market" | "limit";
 
 const schwabClientByPortfolio = new Map<number, SchwabApiClient>();
 const accountHashByPortfolio = new Map<number, string>();
+
+async function resolveTradierAccountId(
+  portfolioId: number,
+  creds: { apiKey: string; accountId?: string; sandbox: boolean }
+): Promise<string> {
+  if (creds.accountId?.trim()) {
+    return creds.accountId.trim();
+  }
+  const accountId = await getTradierAccountId(creds.apiKey, creds.sandbox);
+  await writeTradierCredentials(portfolioId, {
+    apiKey: creds.apiKey,
+    accountId,
+    sandbox: creds.sandbox,
+  });
+  return accountId;
+}
 
 type AccountNumberEntry = { accountNumber: string; hashValue: string };
 
@@ -225,6 +251,25 @@ async function refreshTokensIfNeeded(portfolioId: number): Promise<TokenData> {
 async function getCurrentPositions(
   portfolioId: number
 ): Promise<Map<string, Position>> {
+  const brokerage = await getPortfolioBrokerage(portfolioId);
+  if (brokerage === "tradier") {
+    const creds = await readTradierCredentials(portfolioId);
+    if (!creds) {
+      throw new Error("Tradier credentials are required for this portfolio. Connect via Tradier in the UI.");
+    }
+    const accountId = await resolveTradierAccountId(portfolioId, creds);
+    const positions = await getTradierPositions(creds.apiKey, accountId, creds.sandbox);
+    const positionsMap = new Map<string, Position>();
+    for (const p of positions) {
+      positionsMap.set(p.symbol, {
+        symbol: p.symbol,
+        longQuantity: p.longQuantity,
+        shortQuantity: 0,
+      });
+    }
+    return positionsMap;
+  }
+
   const schwab = await initializeSchwabClient(portfolioId);
   const positionsMap = new Map<string, Position>();
 
@@ -272,23 +317,33 @@ async function getCurrentPositions(
   return positionsMap;
 }
 
-export async function verifySchwabConnection(portfolioId: number): Promise<{
+export type VerifyConnectionResult = {
   ok: boolean;
   message: string;
   positionsCount?: number;
-}> {
+};
+
+export async function verifyConnection(portfolioId: number): Promise<VerifyConnectionResult> {
   try {
-    await initializeSchwabClient(portfolioId);
+    const brokerage = await getPortfolioBrokerage(portfolioId);
+    if (!brokerage) {
+      return { ok: false, message: "No credentials. Link this portfolio via Schwab or Tradier." };
+    }
     const positions = await getCurrentPositions(portfolioId);
+    const label = brokerage === "schwab" ? "Schwab" : "Tradier";
     return {
       ok: true,
-      message: "Schwab API connected",
+      message: `${label} API connected`,
       positionsCount: positions.size,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { ok: false, message };
   }
+}
+
+export async function verifySchwabConnection(portfolioId: number): Promise<VerifyConnectionResult> {
+  return verifyConnection(portfolioId);
 }
 
 export type PortfolioPosition = {
@@ -320,17 +375,6 @@ async function placeBuyOrder(
   shares: number,
   price: number
 ): Promise<TradeExecutionResult> {
-  if (!ENABLE_TRADING) {
-    return {
-      symbol,
-      action: "BUY",
-      shares,
-      price,
-      success: false,
-      error: "Trading is disabled (SCHWAB_ENABLE_TRADING=false)",
-    };
-  }
-
   if (shares <= 0) {
     return {
       symbol,
@@ -339,6 +383,74 @@ async function placeBuyOrder(
       price,
       success: false,
       error: "Invalid share quantity: must be greater than 0",
+    };
+  }
+
+  const brokerage = await getPortfolioBrokerage(portfolioId);
+  if (brokerage === "tradier") {
+    if (!TRADIER_ENABLE_TRADING) {
+      return {
+        symbol,
+        action: "BUY",
+        shares,
+        price,
+        success: false,
+        error: "Trading is disabled (TRADIER_ENABLE_TRADING=false)",
+      };
+    }
+    const creds = await readTradierCredentials(portfolioId);
+    if (!creds) {
+      return {
+        symbol,
+        action: "BUY",
+        shares,
+        price,
+        success: false,
+        error: "Tradier credentials missing for this portfolio.",
+      };
+    }
+    try {
+      const accountId = await resolveTradierAccountId(portfolioId, creds);
+      const { orderId } = await placeTradierOrder(
+        creds.apiKey,
+        accountId,
+        creds.sandbox,
+        "buy",
+        symbol,
+        shares,
+        price,
+        TRADIER_ORDER_TYPE
+      );
+      return {
+        symbol,
+        action: "BUY",
+        shares,
+        price,
+        success: true,
+        orderId,
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`Failed to place Tradier BUY order for ${symbol}:`, errorMessage);
+      return {
+        symbol,
+        action: "BUY",
+        shares,
+        price,
+        success: false,
+        error: errorMessage,
+      };
+    }
+  }
+
+  if (!ENABLE_TRADING) {
+    return {
+      symbol,
+      action: "BUY",
+      shares,
+      price,
+      success: false,
+      error: "Trading is disabled (SCHWAB_ENABLE_TRADING=false)",
     };
   }
 
@@ -420,17 +532,6 @@ async function placeSellOrder(
   shares: number,
   price: number
 ): Promise<TradeExecutionResult> {
-  if (!ENABLE_TRADING) {
-    return {
-      symbol,
-      action: "SELL",
-      shares,
-      price,
-      success: false,
-      error: "Trading is disabled (SCHWAB_ENABLE_TRADING=false)",
-    };
-  }
-
   if (shares <= 0) {
     return {
       symbol,
@@ -439,6 +540,74 @@ async function placeSellOrder(
       price,
       success: false,
       error: "Invalid share quantity: must be greater than 0",
+    };
+  }
+
+  const brokerage = await getPortfolioBrokerage(portfolioId);
+  if (brokerage === "tradier") {
+    if (!TRADIER_ENABLE_TRADING) {
+      return {
+        symbol,
+        action: "SELL",
+        shares,
+        price,
+        success: false,
+        error: "Trading is disabled (TRADIER_ENABLE_TRADING=false)",
+      };
+    }
+    const creds = await readTradierCredentials(portfolioId);
+    if (!creds) {
+      return {
+        symbol,
+        action: "SELL",
+        shares,
+        price,
+        success: false,
+        error: "Tradier credentials missing for this portfolio.",
+      };
+    }
+    try {
+      const accountId = await resolveTradierAccountId(portfolioId, creds);
+      const { orderId } = await placeTradierOrder(
+        creds.apiKey,
+        accountId,
+        creds.sandbox,
+        "sell",
+        symbol,
+        shares,
+        price,
+        TRADIER_ORDER_TYPE
+      );
+      return {
+        symbol,
+        action: "SELL",
+        shares,
+        price,
+        success: true,
+        orderId,
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`Failed to place Tradier SELL order for ${symbol}:`, errorMessage);
+      return {
+        symbol,
+        action: "SELL",
+        shares,
+        price,
+        success: false,
+        error: errorMessage,
+      };
+    }
+  }
+
+  if (!ENABLE_TRADING) {
+    return {
+      symbol,
+      action: "SELL",
+      shares,
+      price,
+      success: false,
+      error: "Trading is disabled (SCHWAB_ENABLE_TRADING=false)",
     };
   }
 
@@ -524,8 +693,17 @@ export async function executeTrades(
     skipped: [],
   };
 
-  if (!ENABLE_TRADING) {
-    console.log("Trading is disabled. Set SCHWAB_ENABLE_TRADING=true to enable.");
+  const brokerage = await getPortfolioBrokerage(portfolioId);
+  const tradingDisabled =
+    (brokerage === "schwab" && !ENABLE_TRADING) ||
+    (brokerage === "tradier" && !TRADIER_ENABLE_TRADING);
+  if (brokerage && tradingDisabled) {
+    console.log(
+      `Trading is disabled for ${brokerage}. Set ${brokerage === "schwab" ? "SCHWAB" : "TRADIER"}_ENABLE_TRADING=true to enable.`
+    );
+    return summary;
+  }
+  if (!brokerage) {
     return summary;
   }
 
@@ -629,8 +807,17 @@ export async function executeTradesFromActions(
     skipped: [],
   };
 
-  if (!ENABLE_TRADING) {
-    console.log("Trading is disabled. Set SCHWAB_ENABLE_TRADING=true to enable.");
+  const brokerage = await getPortfolioBrokerage(portfolioId);
+  const tradingDisabled =
+    (brokerage === "schwab" && !ENABLE_TRADING) ||
+    (brokerage === "tradier" && !TRADIER_ENABLE_TRADING);
+  if (brokerage && tradingDisabled) {
+    console.log(
+      `Trading is disabled for ${brokerage}. Set ${brokerage === "schwab" ? "SCHWAB" : "TRADIER"}_ENABLE_TRADING=true to enable.`
+    );
+    return summary;
+  }
+  if (!brokerage) {
     return summary;
   }
 

@@ -4,6 +4,7 @@ import {
   fetchPortfolios,
   createPortfolio,
   startSchwabLogin,
+  connectTradier,
   verifyPortfolio,
   fetchStatistics,
   fetchPortfolioPositions,
@@ -61,6 +62,25 @@ function useStartSchwabLogin() {
   });
 }
 
+function useConnectTradier() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      portfolioId,
+      apiKey,
+      sandbox,
+    }: {
+      portfolioId: number;
+      apiKey: string;
+      sandbox: boolean;
+    }) => connectTradier(portfolioId, apiKey, sandbox),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: PORTFOLIOS_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: STATISTICS_QUERY_KEY });
+    },
+  });
+}
+
 function useVerifyPortfolio() {
   return useMutation({
     mutationFn: (portfolioId: number) => verifyPortfolio(portfolioId),
@@ -102,15 +122,24 @@ function PortfolioRow({
   portfolio,
   loginInProgress,
   onLogin,
+  showTradierForm,
+  onShowTradierForm,
+  onCloseTradierForm,
   showPositionsLink,
 }: {
   portfolio: PortfolioItem;
   loginInProgress: boolean;
   onLogin: (id: number) => void;
+  showTradierForm: boolean;
+  onShowTradierForm: () => void;
+  onCloseTradierForm: () => void;
   showPositionsLink?: boolean;
 }) {
   const verifyMutation = useVerifyPortfolio();
+  const connectTradierMutation = useConnectTradier();
   const [verifyMsg, setVerifyMsg] = useState<string | null>(null);
+  const [tradierApiKey, setTradierApiKey] = useState("");
+  const [tradierSandbox, setTradierSandbox] = useState(true);
 
   const handleVerify = () => {
     setVerifyMsg("…");
@@ -124,23 +153,49 @@ function PortfolioRow({
     });
   };
 
+  const handleTradierSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const key = tradierApiKey.trim();
+    if (!key) return;
+    connectTradierMutation.mutate(
+      { portfolioId: portfolio.id, apiKey: key, sandbox: tradierSandbox },
+      {
+        onSuccess: () => {
+          setTradierApiKey("");
+          onCloseTradierForm();
+        },
+      }
+    );
+  };
+
+  const statusLabel = portfolio.hasCredentials
+    ? `Connected (${portfolio.brokerage === "tradier" ? "Tradier" : "Schwab"})`
+    : "Not connected";
+
   return (
     <li className="portfolio-row">
       <span className="portfolio-name">{portfolio.name}</span>
       <span className={`status ${portfolio.hasCredentials ? "connected" : "disconnected"}`}>
-        {portfolio.hasCredentials ? "Connected" : "Not connected"}
+        {statusLabel}
       </span>
       <div className="portfolio-actions">
         {showPositionsLink && portfolio.hasCredentials && (
           <a href={`#/portfolios/${portfolio.id}`}>Positions</a>
         )}
-        <button
-          type="button"
-          onClick={() => onLogin(portfolio.id)}
-          disabled={loginInProgress}
-        >
-          Login with Schwab
-        </button>
+        {!portfolio.hasCredentials && (
+          <>
+            <button
+              type="button"
+              onClick={() => onLogin(portfolio.id)}
+              disabled={loginInProgress}
+            >
+              Login with Schwab
+            </button>
+            <button type="button" onClick={onShowTradierForm} disabled={showTradierForm}>
+              Connect Tradier
+            </button>
+          </>
+        )}
         <button
           type="button"
           onClick={handleVerify}
@@ -150,6 +205,44 @@ function PortfolioRow({
         </button>
         {verifyMsg !== null && <span className="verify-msg">{verifyMsg}</span>}
       </div>
+      {showTradierForm && (
+        <form
+          className="tradier-connect-form"
+          onSubmit={handleTradierSubmit}
+          style={{ marginTop: "0.5rem", padding: "0.5rem", border: "1px solid #ccc", borderRadius: "4px" }}
+        >
+          <p className="tradier-form-note" style={{ fontSize: "0.85rem", marginBottom: "0.5rem" }}>
+            Your API key is stored securely and cannot be viewed again.
+          </p>
+          <input
+            type="password"
+            value={tradierApiKey}
+            onChange={(e) => setTradierApiKey(e.target.value)}
+            placeholder="Tradier API key"
+            autoComplete="off"
+            style={{ marginRight: "0.5rem", width: "200px" }}
+          />
+          <label style={{ marginRight: "0.75rem" }}>
+            <input
+              type="checkbox"
+              checked={tradierSandbox}
+              onChange={(e) => setTradierSandbox(e.target.checked)}
+            />{" "}
+            Use sandbox
+          </label>
+          <button type="submit" disabled={connectTradierMutation.isPending || !tradierApiKey.trim()}>
+            {connectTradierMutation.isPending ? "Connecting…" : "Save"}
+          </button>
+          <button type="button" onClick={onCloseTradierForm} style={{ marginLeft: "0.5rem" }}>
+            Cancel
+          </button>
+          {connectTradierMutation.isError && (
+            <span className="error-msg" style={{ marginLeft: "0.5rem" }}>
+              {String(connectTradierMutation.error)}
+            </span>
+          )}
+        </form>
+      )}
     </li>
   );
 }
@@ -191,6 +284,9 @@ function DashboardView({
               portfolio={p}
               loginInProgress={loginInProgress}
               onLogin={onLogin}
+              showTradierForm={false}
+              onShowTradierForm={() => {}}
+              onCloseTradierForm={() => {}}
               showPositionsLink
             />
           ))}
@@ -212,7 +308,7 @@ function PortfolioDetailView({ portfolioId, portfolios }: { portfolioId: number;
       </p>
       <h1>{portfolio ? portfolio.name : `Portfolio ${portfolioId}`}</h1>
       {!portfolio?.hasCredentials && (
-        <p className="error-msg">Not connected. Link this portfolio via Portfolios → Login with Schwab.</p>
+        <p className="error-msg">Not connected. Link this portfolio via Portfolios (Schwab or Tradier).</p>
       )}
       {portfolio?.hasCredentials && (
         <>
@@ -278,6 +374,7 @@ function PortfoliosView({
   const createMutation = useCreatePortfolio();
   const loginMutation = useStartSchwabLogin();
   const [name, setName] = useState("");
+  const [showTradierFormForId, setShowTradierFormForId] = useState<number | null>(null);
 
   const handleAdd = () => {
     const trimmed = name.trim();
@@ -290,7 +387,7 @@ function PortfoliosView({
   return (
     <>
       <h1>Portfolios</h1>
-      <p>Add portfolios and link each to a Schwab account via OAuth.</p>
+      <p>Add portfolios and link each to Schwab (OAuth) or Tradier (API key).</p>
 
       {isLoading && <p>Loading…</p>}
       {error && <p className="error-msg">{String(error)}</p>}
@@ -302,6 +399,9 @@ function PortfoliosView({
             portfolio={p}
             loginInProgress={loginInProgress}
             onLogin={onLogin}
+            showTradierForm={showTradierFormForId === p.id}
+            onShowTradierForm={() => setShowTradierFormForId(p.id)}
+            onCloseTradierForm={() => setShowTradierFormForId(null)}
           />
         ))}
       </ul>
