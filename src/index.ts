@@ -64,7 +64,7 @@ async function runCheck(): Promise<void> {
       portfolioIds = portfolioIds.filter((id) => allowed.has(id));
     }
     if (portfolioIds.length === 0) {
-      console.log("No portfolios with Schwab credentials; skipping trade execution.");
+      console.log("No portfolios with Schwab or Tradier credentials; skipping trade execution.");
     } else {
       for (const portfolioId of portfolioIds) {
         const tradeSummary = await executeTradesFromActions(scaledActions, portfolioId);

@@ -20,10 +20,25 @@ jest.mock('@sudowealth/schwab-api', () => {
 
 const mockReadSchwabCredentials = jest.fn().mockResolvedValue(null);
 const mockWriteSchwabCredentials = jest.fn().mockResolvedValue(undefined);
+const mockReadTradierCredentials = jest.fn().mockResolvedValue(null);
+const mockWriteTradierCredentials = jest.fn().mockResolvedValue(undefined);
+const mockGetPortfolioBrokerage = jest.fn().mockResolvedValue('schwab' as const);
 
 jest.mock('../src/state', () => ({
   readSchwabCredentials: (...args: unknown[]) => mockReadSchwabCredentials(...args),
   writeSchwabCredentials: (...args: unknown[]) => mockWriteSchwabCredentials(...args),
+  readTradierCredentials: (...args: unknown[]) => mockReadTradierCredentials(...args),
+  writeTradierCredentials: (...args: unknown[]) => mockWriteTradierCredentials(...args),
+  getPortfolioBrokerage: (...args: unknown[]) => mockGetPortfolioBrokerage(...args),
+}));
+
+const mockGetTradierPositions = jest.fn();
+const mockPlaceTradierOrder = jest.fn();
+
+jest.mock('../src/tradier-client', () => ({
+  getTradierAccountId: jest.fn().mockResolvedValue('VA123'),
+  getTradierPositions: (...args: unknown[]) => mockGetTradierPositions(...args),
+  placeTradierOrder: (...args: unknown[]) => mockPlaceTradierOrder(...args),
 }));
 
 describe('Trader', () => {
@@ -32,6 +47,8 @@ describe('Trader', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockGetPortfolioBrokerage.mockResolvedValue('schwab');
+    mockReadTradierCredentials.mockResolvedValue(null);
     process.env.SCHWAB_ENABLE_TRADING = 'true';
     process.env.SCHWAB_CLIENT_ID = 'test-client-id';
     process.env.SCHWAB_CLIENT_SECRET = 'test-client-secret';
@@ -298,6 +315,7 @@ describe('Trader', () => {
 
     it('should handle missing credentials', async () => {
       mockReadSchwabCredentials.mockResolvedValue(null);
+      mockGetPortfolioBrokerage.mockResolvedValue('schwab');
       jest.resetModules();
 
       const actions: PortfolioAction[] = [
@@ -307,6 +325,113 @@ describe('Trader', () => {
       const { executeTradesFromActions: executeTrades } = await import('../src/trader');
 
       await expect(executeTrades(actions, 1)).rejects.toThrow(/Schwab credentials are required|OAuth login/);
+    });
+
+    it('should execute orders via Tradier when portfolio has Tradier credentials', async () => {
+      mockGetPortfolioBrokerage.mockResolvedValue('tradier');
+      mockReadTradierCredentials.mockResolvedValue({
+        apiKey: 'test-tradier-key',
+        accountId: 'VA123',
+        sandbox: true,
+      });
+      process.env.TRADIER_ENABLE_TRADING = 'true';
+      jest.resetModules();
+
+      mockPlaceTradierOrder.mockResolvedValue({ orderId: 'tradier-order-1' });
+
+      const { executeTradesFromActions } = await import('../src/trader');
+      const actions: PortfolioAction[] = [
+        { symbol: 'AAPL', action: 'BUY', shares: 10, price: 150.50 },
+      ];
+
+      const result = await executeTradesFromActions(actions, 1);
+
+      expect(result.successful).toHaveLength(1);
+      expect(result.successful[0]).toMatchObject({
+        symbol: 'AAPL',
+        action: 'BUY',
+        shares: 10,
+        price: 150.50,
+        success: true,
+        orderId: 'tradier-order-1',
+      });
+      expect(mockPlaceTradierOrder).toHaveBeenCalledWith(
+        'test-tradier-key',
+        'VA123',
+        true,
+        'buy',
+        'AAPL',
+        10,
+        150.50,
+        expect.any(String)
+      );
+      expect(mockSchwabClient.trader.orders.placeOrderForAccount).not.toHaveBeenCalled();
+    });
+
+    it('should skip Tradier trading when TRADIER_ENABLE_TRADING is false', async () => {
+      mockGetPortfolioBrokerage.mockResolvedValue('tradier');
+      mockReadTradierCredentials.mockResolvedValue({
+        apiKey: 'test-tradier-key',
+        accountId: 'VA123',
+        sandbox: true,
+      });
+      process.env.TRADIER_ENABLE_TRADING = 'false';
+      jest.resetModules();
+
+      const { executeTradesFromActions } = await import('../src/trader');
+      const actions: PortfolioAction[] = [
+        { symbol: 'AAPL', action: 'BUY', shares: 10, price: 150.50 },
+      ];
+
+      const result = await executeTradesFromActions(actions, 1);
+
+      expect(result.successful).toHaveLength(0);
+      expect(result.failed).toHaveLength(0);
+      expect(mockPlaceTradierOrder).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getPortfolioPositions', () => {
+    it('should return positions from Tradier when portfolio has Tradier credentials', async () => {
+      mockGetPortfolioBrokerage.mockResolvedValue('tradier');
+      mockReadTradierCredentials.mockResolvedValue({
+        apiKey: 'test-tradier-key',
+        accountId: 'VA123',
+        sandbox: true,
+      });
+      mockGetTradierPositions.mockResolvedValue([
+        { symbol: 'AAPL', longQuantity: 10 },
+        { symbol: 'MSFT', longQuantity: 5 },
+      ]);
+      jest.resetModules();
+
+      const { getPortfolioPositions } = await import('../src/trader');
+      const positions = await getPortfolioPositions(1);
+
+      expect(positions).toHaveLength(2);
+      expect(positions).toContainEqual({ symbol: 'AAPL', longQuantity: 10 });
+      expect(positions).toContainEqual({ symbol: 'MSFT', longQuantity: 5 });
+      expect(mockGetTradierPositions).toHaveBeenCalledWith('test-tradier-key', 'VA123', true);
+    });
+  });
+
+  describe('verifyConnection', () => {
+    it('should verify Tradier connection and return positions count', async () => {
+      mockGetPortfolioBrokerage.mockResolvedValue('tradier');
+      mockReadTradierCredentials.mockResolvedValue({
+        apiKey: 'test-tradier-key',
+        accountId: 'VA123',
+        sandbox: true,
+      });
+      mockGetTradierPositions.mockResolvedValue([{ symbol: 'AAPL', longQuantity: 10 }]);
+      jest.resetModules();
+
+      const { verifyConnection } = await import('../src/trader');
+      const result = await verifyConnection(1);
+
+      expect(result.ok).toBe(true);
+      expect(result.message).toContain('Tradier');
+      expect(result.positionsCount).toBe(1);
     });
   });
 });

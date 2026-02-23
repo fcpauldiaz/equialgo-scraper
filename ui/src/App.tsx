@@ -169,7 +169,7 @@ function PortfolioRow({
   };
 
   const statusLabel = portfolio.hasCredentials
-    ? `Connected (${portfolio.brokerage === "tradier" ? "Tradier" : "Schwab"})`
+    ? `Connected${portfolio.brokerage ? ` (${portfolio.brokerage === "tradier" ? "Tradier" : "Schwab"})` : ""}`
     : "Not connected";
 
   return (
