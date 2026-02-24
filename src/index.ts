@@ -14,6 +14,7 @@ import {
 import { startUiServer } from "./ui-server";
 
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE || "0 9 * * *";
+const CRON_TIMEZONE = process.env.CRON_TIMEZONE?.trim() || undefined;
 
 async function runCheck(): Promise<void> {
   try {
@@ -88,8 +89,7 @@ async function runCheck(): Promise<void> {
 
 async function main(): Promise<void> {
   console.log(`EquiAlgo Alert Service starting...`);
-  console.log(`Cron schedule: ${CRON_SCHEDULE}`);
-  console.log(`Scheduled to run daily at: ${CRON_SCHEDULE}`);
+  console.log(`Cron schedule: ${CRON_SCHEDULE}${CRON_TIMEZONE ? ` (${CRON_TIMEZONE})` : ""}`);
 
   try {
     await initializeDatabase();
@@ -104,7 +104,7 @@ async function main(): Promise<void> {
 
   cron.schedule(CRON_SCHEDULE, async () => {
     await runCheck();
-  });
+  }, CRON_TIMEZONE ? { timezone: CRON_TIMEZONE } : {});
 
   console.log("Service is running. Waiting for scheduled execution...");
   console.log("Press Ctrl+C to stop.");

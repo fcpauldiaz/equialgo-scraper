@@ -50,6 +50,7 @@ Configuration is done via environment variables. Create a `.env` file in the pro
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CRON_SCHEDULE` | `0 9 * * *` | Cron schedule for daily execution (9:00 AM daily) |
+| `CRON_TIMEZONE` | *(system)* | Timezone for cron (e.g. `America/New_York`, `Europe/London`). Schedule is evaluated in this timezone. |
 | `NTFY_TOPIC` | `fcpauldiaz_notifications` | Ntfy topic for notifications |
 | `NTFY_BASE_URL` | `https://ntfy.sh` | Base URL for ntfy service |
 | `PORTFOLIO_SIZE` | `10000` | Portfolio size in dollars for share calculations (legacy, not used with scraper) |
@@ -117,9 +118,10 @@ SCHWAB_ENABLE_TRADING=false
 export CRON_SCHEDULE="0 9 * * *"   # 9:00 AM daily (default)
 export CRON_SCHEDULE="0 8 * * *"   # 8:00 AM daily
 export CRON_SCHEDULE="0 10 * * 1-5"  # 10:00 AM on weekdays only
+export CRON_TIMEZONE="America/New_York"   # Run at 9 AM Eastern
 ```
 
-Cron format: `minute hour day month day-of-week`
+Cron format: `minute hour day month day-of-week`. Use `CRON_TIMEZONE` so the schedule is evaluated in that timezone (IANA name, e.g. `America/New_York`, `UTC`).
 
 ## Usage
 
