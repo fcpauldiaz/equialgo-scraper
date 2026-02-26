@@ -252,6 +252,69 @@ async function refreshTokensIfNeeded(portfolioId: number): Promise<TokenData> {
   }
 }
 
+type PlaceOrderResponseBody = { orderId?: number };
+
+async function placeOrderViaDirectPost(
+  portfolioId: number,
+  accountNumber: string,
+  orderBody: Record<string, unknown>
+): Promise<PlaceOrderResponseBody> {
+  const path = SCHWAB_PLACE_ORDER_PATH.replace("{accountNumber}", encodeURIComponent(accountNumber));
+  const url = `${SCHWAB_API_BASE_URL}${path}`;
+
+  const doPost = async (accessToken: string): Promise<PlaceOrderResponseBody> => {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(orderBody),
+    });
+
+    const text = await res.text();
+    let json: unknown = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      // ignore
+    }
+
+    if (!res.ok) {
+      const message =
+        json && typeof json === "object" && "message" in json
+          ? String((json as { message: unknown }).message)
+          : text || res.statusText;
+      const err = new Error(
+        `Schwab place order failed: ${res.status} ${res.statusText}${message ? ` - ${message}` : ""}`
+      ) as Error & { status?: number };
+      err.status = res.status;
+      throw err;
+    }
+
+    return (json as PlaceOrderResponseBody) ?? {};
+  };
+
+  let creds = await readSchwabCredentials(portfolioId);
+  if (!creds?.accessToken) {
+    throw new Error("Schwab credentials missing or no access token.");
+  }
+
+  try {
+    return await doPost(creds.accessToken);
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    if (status === 401) {
+      await refreshTokensIfNeeded(portfolioId);
+      creds = await readSchwabCredentials(portfolioId);
+      if (creds?.accessToken) {
+        return await doPost(creds.accessToken);
+      }
+    }
+    throw err;
+  }
+}
+
 async function getCurrentPositions(
   portfolioId: number
 ): Promise<Map<string, Position>> {
