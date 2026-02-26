@@ -50,6 +50,10 @@ const ORDER_TYPE = (process.env.SCHWAB_ORDER_TYPE || "MARKET") as "MARKET" | "LI
 const TRADIER_ENABLE_TRADING = process.env.TRADIER_ENABLE_TRADING === "true";
 const TRADIER_ORDER_TYPE = (process.env.TRADIER_ORDER_TYPE || "market") as "market" | "limit";
 
+const SCHWAB_API_BASE_URL =
+  process.env.SCHWAB_API_BASE_URL ?? "https://api.schwabapi.com";
+const SCHWAB_PLACE_ORDER_PATH = "/trader/v1/accounts/{accountNumber}/orders";
+
 const schwabClientByPortfolio = new Map<number, SchwabApiClient>();
 const accountHashByPortfolio = new Map<number, string>();
 
@@ -454,7 +458,7 @@ async function placeBuyOrder(
     };
   }
 
-  const schwab = await initializeSchwabClient(portfolioId);
+  const accountNumber = await getAccountHashFromApi(portfolioId);
 
   try {
     const orderBody: {
@@ -492,10 +496,11 @@ async function placeBuyOrder(
       orderBody.price = price;
     }
 
-    const response = await schwab.trader.orders.placeOrderForAccount({
-      pathParams: { accountNumber: await getAccountHashFromApi(portfolioId) },
-      body: orderBody as Record<string, unknown>,
-    });
+    const response = await placeOrderViaDirectPost(
+      portfolioId,
+      accountNumber,
+      orderBody as Record<string, unknown>
+    );
 
     return {
       symbol,
@@ -611,7 +616,7 @@ async function placeSellOrder(
     };
   }
 
-  const schwab = await initializeSchwabClient(portfolioId);
+  const accountNumber = await getAccountHashFromApi(portfolioId);
 
   try {
     const orderBody: {
@@ -649,10 +654,11 @@ async function placeSellOrder(
       orderBody.price = price;
     }
 
-    const response = await schwab.trader.orders.placeOrderForAccount({
-      pathParams: { accountNumber: await getAccountHashFromApi(portfolioId) },
-      body: orderBody as Record<string, unknown>,
-    });
+    const response = await placeOrderViaDirectPost(
+      portfolioId,
+      accountNumber,
+      orderBody as Record<string, unknown>
+    );
 
     return {
       symbol,

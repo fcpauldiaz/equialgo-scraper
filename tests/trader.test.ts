@@ -44,6 +44,7 @@ jest.mock('../src/tradier-client', () => ({
 describe('Trader', () => {
   let mockSchwabClient: any;
   let mockAuth: any;
+  let mockFetch: jest.SpyInstance;
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -84,9 +85,20 @@ describe('Trader', () => {
 
     mockCreateSchwabAuth.mockReturnValue(mockAuth);
     mockCreateApiClient.mockReturnValue(mockSchwabClient);
+
+    mockFetch = jest.spyOn(global, 'fetch').mockImplementation(
+      (_input: RequestInfo | URL, _init?: RequestInit) =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ orderId: 12345 })),
+          json: () => Promise.resolve({ orderId: 12345 }),
+        } as Response)
+    );
   });
 
   afterEach(() => {
+    mockFetch?.mockRestore?.();
     jest.resetModules();
   });
 
@@ -96,10 +108,6 @@ describe('Trader', () => {
       const actions: PortfolioAction[] = [
         { symbol: 'AAPL', action: 'BUY', shares: 10, price: 150.50 },
       ];
-
-      mockSchwabClient.trader.orders.placeOrderForAccount.mockResolvedValue({
-        orderId: '12345',
-      });
 
       const result = await executeTradesFromActions(actions, 1);
 
@@ -113,33 +121,41 @@ describe('Trader', () => {
         success: true,
         orderId: '12345',
       });
-      expect(mockSchwabClient.trader.orders.placeOrderForAccount).toHaveBeenCalledWith({
-        pathParams: { accountNumber: 'mock-hash-123' },
-        body: expect.objectContaining({
-          orderType: 'MARKET',
-          orderLegCollection: [
-            {
-              instruction: 'BUY',
-              quantity: 10,
-              instrument: {
-                symbol: 'AAPL',
-                assetType: 'EQUITY',
-              },
-            },
-          ],
-        }),
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/accounts/mock-hash-123/orders'),
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            Authorization: 'Bearer test-access-token',
+            'Content-Type': 'application/json',
+          }),
+        })
+      );
+      const fetchBody = JSON.parse((mockFetch.mock.calls[0][1] as RequestInit).body as string);
+      expect(fetchBody).toMatchObject({
+        orderType: 'MARKET',
+        orderLegCollection: [
+          {
+            instruction: 'BUY',
+            quantity: 10,
+            instrument: { symbol: 'AAPL', assetType: 'EQUITY' },
+          },
+        ],
       });
     });
 
     it('should successfully execute SELL orders', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ orderId: 67890 })),
+        json: () => Promise.resolve({ orderId: 67890 }),
+      } as Response);
+
       const { executeTradesFromActions } = await import('../src/trader');
       const actions: PortfolioAction[] = [
         { symbol: 'MSFT', action: 'SELL', shares: 5, price: 300.25 },
       ];
-
-      mockSchwabClient.trader.orders.placeOrderForAccount.mockResolvedValue({
-        orderId: '67890',
-      });
 
       const result = await executeTradesFromActions(actions, 1);
 
@@ -153,21 +169,20 @@ describe('Trader', () => {
         success: true,
         orderId: '67890',
       });
-      expect(mockSchwabClient.trader.orders.placeOrderForAccount).toHaveBeenCalledWith({
-        pathParams: { accountNumber: 'mock-hash-123' },
-        body: expect.objectContaining({
-          orderType: 'MARKET',
-          orderLegCollection: [
-            {
-              instruction: 'SELL',
-              quantity: 5,
-              instrument: {
-                symbol: 'MSFT',
-                assetType: 'EQUITY',
-              },
-            },
-          ],
-        }),
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/accounts/mock-hash-123/orders'),
+        expect.anything()
+      );
+      const fetchBody = JSON.parse((mockFetch.mock.calls[0][1] as RequestInit).body as string);
+      expect(fetchBody).toMatchObject({
+        orderType: 'MARKET',
+        orderLegCollection: [
+          {
+            instruction: 'SELL',
+            quantity: 5,
+            instrument: { symbol: 'MSFT', assetType: 'EQUITY' },
+          },
+        ],
       });
     });
 
@@ -179,17 +194,13 @@ describe('Trader', () => {
         { symbol: 'AAPL', action: 'BUY', shares: 10, price: 150.50 },
       ];
 
-      mockSchwabClient.trader.orders.placeOrderForAccount.mockResolvedValue({
-        orderId: '12345',
-      });
-
       const { executeTradesFromActions: executeTrades } = await import('../src/trader');
       const result = await executeTrades(actions, 1);
 
       expect(result.successful.length).toBeGreaterThanOrEqual(0);
-      const callArgs = mockSchwabClient.trader.orders.placeOrderForAccount.mock.calls[0];
-      if (callArgs && callArgs[0]?.body) {
-        expect(['MARKET', 'LIMIT']).toContain(callArgs[0].body.orderType);
+      if (mockFetch.mock.calls.length > 0) {
+        const fetchBody = JSON.parse((mockFetch.mock.calls[0][1] as RequestInit).body as string);
+        expect(['MARKET', 'LIMIT']).toContain(fetchBody.orderType);
       }
 
       process.env.SCHWAB_ORDER_TYPE = originalOrderType;
@@ -209,19 +220,32 @@ describe('Trader', () => {
 
       expect(result.successful).toHaveLength(0);
       expect(result.failed).toHaveLength(0);
-      expect(mockSchwabClient.trader.orders.placeOrderForAccount).not.toHaveBeenCalled();
+      const placeOrderFetches = mockFetch.mock.calls.filter(
+        (call: unknown[]) => (call[0] as string).includes('/orders')
+      );
+      expect(placeOrderFetches).toHaveLength(0);
     });
 
     it('should handle API errors gracefully', async () => {
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 400,
+          statusText: 'Bad Request',
+          text: () => Promise.resolve(JSON.stringify({ message: 'Insufficient funds' })),
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ orderId: 67890 })),
+          json: () => Promise.resolve({ orderId: 67890 }),
+        } as Response);
+
       const { executeTradesFromActions } = await import('../src/trader');
       const actions: PortfolioAction[] = [
         { symbol: 'AAPL', action: 'BUY', shares: 10, price: 150.50 },
         { symbol: 'MSFT', action: 'BUY', shares: 5, price: 300.25 },
       ];
-
-      mockSchwabClient.trader.orders.placeOrderForAccount
-        .mockRejectedValueOnce(new Error('Insufficient funds'))
-        .mockResolvedValueOnce({ orderId: '67890' });
 
       const result = await executeTradesFromActions(actions, 1);
 
@@ -231,8 +255,8 @@ describe('Trader', () => {
         symbol: 'AAPL',
         action: 'BUY',
         success: false,
-        error: 'Insufficient funds',
       });
+      expect(result.failed[0].error).toContain('Insufficient funds');
       expect(result.successful[0]).toMatchObject({
         symbol: 'MSFT',
         success: true,
@@ -240,34 +264,49 @@ describe('Trader', () => {
     });
 
     it('should handle API errors gracefully with token expiration', async () => {
-      mockReadSchwabCredentials.mockResolvedValue({
-        accessToken: 'test-access-token',
-        refreshToken: 'test-refresh-token',
-        redirectUri: 'https://127.0.0.1:8765/callback',
-        accountNumber: '123456789',
+      mockReadSchwabCredentials
+        .mockResolvedValueOnce({
+          accessToken: 'test-access-token',
+          refreshToken: 'test-refresh-token',
+          redirectUri: 'https://127.0.0.1:8765/callback',
+          accountNumber: '123456789',
+        })
+        .mockResolvedValue({
+          accessToken: 'new-access-token',
+          refreshToken: 'new-refresh-token',
+          redirectUri: 'https://127.0.0.1:8765/callback',
+          accountNumber: '123456789',
+        });
+
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 401,
+          statusText: 'Unauthorized',
+          text: () => Promise.resolve(''),
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ orderId: 'after-refresh' })),
+          json: () => Promise.resolve({ orderId: 'after-refresh' }),
+        } as Response);
+
+      mockAuth.refresh?.mockResolvedValue?.({
+        accessToken: 'new-access-token',
+        refreshToken: 'new-refresh-token',
       });
+
       const { executeTradesFromActions } = await import('../src/trader');
       const actions: PortfolioAction[] = [
         { symbol: 'AAPL', action: 'BUY', shares: 10, price: 150.50 },
       ];
 
-      const authError = Object.assign(new Error('Token expired'), {
-        code: 'TOKEN_EXPIRED',
-        name: 'SchwabAuthError',
-      });
-      mockSchwabClient.trader.orders.placeOrderForAccount
-        .mockRejectedValueOnce(authError)
-        .mockResolvedValueOnce({ orderId: 'after-refresh' });
-
-      mockAuth.refresh.mockResolvedValue({
-        accessToken: 'new-access-token',
-        refreshToken: 'new-refresh-token',
-      });
-
       const result = await executeTradesFromActions(actions, 1);
 
       expect(result.successful).toHaveLength(1);
       expect(result.successful[0].orderId).toBe('after-refresh');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
     it('should validate share quantity', async () => {
@@ -290,10 +329,33 @@ describe('Trader', () => {
 
       expect(result.successful).toHaveLength(0);
       expect(result.failed).toHaveLength(0);
-      expect(mockSchwabClient.trader.orders.placeOrderForAccount).not.toHaveBeenCalled();
+      const placeOrderFetches = mockFetch.mock.calls.filter(
+        (call: unknown[]) => (call[0] as string).includes('/orders')
+      );
+      expect(placeOrderFetches).toHaveLength(0);
     });
 
     it('should execute multiple mixed actions', async () => {
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ orderId: 1 })),
+          json: () => Promise.resolve({ orderId: 1 }),
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ orderId: 2 })),
+          json: () => Promise.resolve({ orderId: 2 }),
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ orderId: 3 })),
+          json: () => Promise.resolve({ orderId: 3 }),
+        } as Response);
+
       const { executeTradesFromActions } = await import('../src/trader');
       const actions: PortfolioAction[] = [
         { symbol: 'AAPL', action: 'BUY', shares: 10, price: 150.50 },
@@ -301,16 +363,14 @@ describe('Trader', () => {
         { symbol: 'GOOGL', action: 'BUY', shares: 3, price: 2500.00 },
       ];
 
-      mockSchwabClient.trader.orders.placeOrderForAccount
-        .mockResolvedValueOnce({ orderId: '1' })
-        .mockResolvedValueOnce({ orderId: '2' })
-        .mockResolvedValueOnce({ orderId: '3' });
-
       const result = await executeTradesFromActions(actions, 1);
 
       expect(result.successful).toHaveLength(3);
       expect(result.failed).toHaveLength(0);
-      expect(mockSchwabClient.trader.orders.placeOrderForAccount).toHaveBeenCalledTimes(3);
+      const placeOrderFetches = mockFetch.mock.calls.filter(
+        (call: unknown[]) => (call[0] as string).includes('/orders')
+      );
+      expect(placeOrderFetches).toHaveLength(3);
     });
 
     it('should handle missing credentials', async () => {
@@ -365,7 +425,10 @@ describe('Trader', () => {
         150.50,
         expect.any(String)
       );
-      expect(mockSchwabClient.trader.orders.placeOrderForAccount).not.toHaveBeenCalled();
+      const placeOrderFetches = mockFetch.mock.calls.filter(
+        (call: unknown[]) => (call[0] as string).includes('/orders')
+      );
+      expect(placeOrderFetches).toHaveLength(0);
     });
 
     it('should skip Tradier trading when TRADIER_ENABLE_TRADING is false', async () => {

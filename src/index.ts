@@ -15,6 +15,8 @@ import { startUiServer } from "./ui-server";
 
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE || "0 9 * * *";
 const CRON_TIMEZONE = process.env.CRON_TIMEZONE?.trim() || undefined;
+const JOB_RETRY_ATTEMPTS = Math.max(1, parseInt(process.env.SCRAPE_JOB_RETRY_ATTEMPTS || "3", 10));
+const JOB_RETRY_DELAY_MS = Math.max(0, parseInt(process.env.SCRAPE_JOB_RETRY_DELAY_MS || "60000", 10));
 
 async function runCheck(): Promise<void> {
   try {
@@ -84,12 +86,16 @@ async function runCheck(): Promise<void> {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error("Error in daily check:", errorMessage);
+    throw error;
   }
 }
 
 async function main(): Promise<void> {
   console.log(`EquiAlgo Alert Service starting...`);
   console.log(`Cron schedule: ${CRON_SCHEDULE}${CRON_TIMEZONE ? ` (${CRON_TIMEZONE})` : ""}`);
+  if (JOB_RETRY_ATTEMPTS > 1) {
+    console.log(`Job retries: ${JOB_RETRY_ATTEMPTS} attempts, ${JOB_RETRY_DELAY_MS / 1000}s between attempts`);
+  }
 
   try {
     await initializeDatabase();
@@ -103,7 +109,24 @@ async function main(): Promise<void> {
   startUiServer();
 
   cron.schedule(CRON_SCHEDULE, async () => {
-    await runCheck();
+    let lastError: Error | undefined;
+    for (let attempt = 1; attempt <= JOB_RETRY_ATTEMPTS; attempt++) {
+      try {
+        await runCheck();
+        return;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        const errorMessage = lastError.message;
+        console.error(`Daily check attempt ${attempt}/${JOB_RETRY_ATTEMPTS} failed:`, errorMessage);
+        if (attempt < JOB_RETRY_ATTEMPTS && JOB_RETRY_DELAY_MS > 0) {
+          console.log(`Retrying in ${JOB_RETRY_DELAY_MS / 1000}s...`);
+          await new Promise((resolve) => setTimeout(resolve, JOB_RETRY_DELAY_MS));
+        }
+      }
+    }
+    if (lastError) {
+      console.error("All retry attempts failed:", lastError.message);
+    }
   }, CRON_TIMEZONE ? { timezone: CRON_TIMEZONE } : {});
 
   console.log("Service is running. Waiting for scheduled execution...");

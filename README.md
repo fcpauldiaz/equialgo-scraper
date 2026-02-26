@@ -57,8 +57,10 @@ Configuration is done via environment variables. Create a `.env` file in the pro
 | `PORTFOLIO_URL` | `https://www.systemtrader.co/gemini/portfolio` | SystemTrader Gemini Portfolio page URL to scrape |
 | `LOGIN_EMAIL` | *Required* | Email for signing in to the portfolio site |
 | `LOGIN_PASSWORD` | *Required* | Password for signing in to the portfolio site |
-| `MAX_RETRIES` | `3` | Maximum number of retry attempts for scraping |
-| `RETRY_DELAY_MS` | `1000` | Delay in milliseconds between retry attempts |
+| `MAX_RETRIES` | `3` | Maximum number of retry attempts for scraping (page-level) |
+| `RETRY_DELAY_MS` | `1000` | Delay in milliseconds between retry attempts (page-level) |
+| `SCRAPE_JOB_RETRY_ATTEMPTS` | `3` | Number of times to retry the full daily check when scrape fails |
+| `SCRAPE_JOB_RETRY_DELAY_MS` | `60000` | Delay in ms between job retries (default 60s) |
 | `PUPPETEER_HEADLESS` | `true` | Run Puppeteer in headless mode (set to `false` to see browser) |
 | `PUPPETEER_EXECUTABLE_PATH` | *(none)* | Path to Chrome/Chromium binary (use on servers where Puppeteer’s bundled Chrome isn’t installed) |
 | `DATABASE_URL` | *Required* | Turso/LibSQL database URL |
