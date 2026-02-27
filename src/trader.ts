@@ -895,24 +895,70 @@ export async function executeTradesFromActions(
     return summary;
   }
 
+  let positions: Map<string, Position>;
+  try {
+    positions = await getCurrentPositions(portfolioId);
+    console.log(`Fetched ${positions.size} current positions`);
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : String(error);
+    console.error("Failed to fetch positions:", errorMessage);
+    summary.failed.push({
+      symbol: "ALL",
+      action: "BUY",
+      shares: 0,
+      price: 0,
+      success: false,
+      error: `Failed to fetch positions: ${errorMessage}`,
+    });
+    return summary;
+  }
+
   console.log(`Executing ${actions.length} trades from scraped actions (portfolio ${portfolioId})...`);
 
   for (const action of actions) {
-    const result =
-      action.action === "BUY"
-        ? await placeBuyOrder(portfolioId, action.symbol, action.shares, action.price)
-        : await placeSellOrder(portfolioId, action.symbol, action.shares, action.price);
+    if (action.action === "SELL") {
+      const position = positions.get(action.symbol);
+      if (!position || position.longQuantity <= 0) {
+        summary.skipped.push({
+          symbol: action.symbol,
+          reason: "No position to exit",
+        });
+        continue;
+      }
+      const sharesToSell = Math.min(action.shares, position.longQuantity);
+      const result = await placeSellOrder(
+        portfolioId,
+        action.symbol,
+        sharesToSell,
+        action.price
+      );
+      if (result.success) {
+        summary.successful.push(result);
+        console.log(
+          `✓ SELL order placed: ${action.symbol} - ${sharesToSell} shares @ $${action.price.toFixed(2)}`
+        );
+      } else {
+        summary.failed.push(result);
+        console.error(`✗ SELL order failed: ${action.symbol} - ${result.error}`);
+      }
+      continue;
+    }
 
+    const result = await placeBuyOrder(
+      portfolioId,
+      action.symbol,
+      action.shares,
+      action.price
+    );
     if (result.success) {
       summary.successful.push(result);
       console.log(
-        `✓ ${action.action} order placed: ${action.symbol} - ${action.shares} shares @ $${action.price.toFixed(2)}`
+        `✓ BUY order placed: ${action.symbol} - ${action.shares} shares @ $${action.price.toFixed(2)}`
       );
     } else {
       summary.failed.push(result);
-      console.error(
-        `✗ ${action.action} order failed: ${action.symbol} - ${result.error}`
-      );
+      console.error(`✗ BUY order failed: ${action.symbol} - ${result.error}`);
     }
   }
 
