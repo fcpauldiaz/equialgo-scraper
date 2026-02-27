@@ -75,7 +75,9 @@ describe('Trader', () => {
           getAccountNumbers: jest.fn().mockResolvedValue([
             { accountNumber: '123456789', hashValue: 'mock-hash-123' },
           ]),
-          getAccountByNumber: jest.fn(),
+          getAccountByNumber: jest.fn().mockResolvedValue({
+            securitiesAccount: { positions: [] },
+          }),
         },
         orders: {
           placeOrderForAccount: jest.fn(),
