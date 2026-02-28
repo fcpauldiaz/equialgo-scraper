@@ -7,11 +7,7 @@ import {
   readState,
   writeTradierCredentials,
 } from "./state";
-import {
-  startSchwabLoginFlow,
-  isSchwabLoginInProgress,
-  handleSchwabCallback,
-} from "./schwab-oauth";
+import { startSchwabLoginFlow, handleSchwabCallback } from "./schwab-oauth";
 import { getTradierAccountId } from "./tradier-client";
 import { verifyConnection, getPortfolioPositions } from "./trader";
 
@@ -142,11 +138,6 @@ export function startUiServer(): http.Server {
 
     if (pathname === "/api/schwab/start-login" && method === "POST") {
       try {
-        if (isSchwabLoginInProgress()) {
-          res.writeHead(409, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "A Schwab login is already in progress" }));
-          return;
-        }
         const body = await parseBody(req);
         const portfolioId =
           typeof body.portfolioId === "number"

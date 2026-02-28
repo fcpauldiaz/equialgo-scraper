@@ -25,7 +25,9 @@ export async function startSchwabLoginFlow(
   portfolioId: number
 ): Promise<StartSchwabLoginResult> {
   if (loginInProgress) {
-    throw new Error("A Schwab login is already in progress");
+    pendingResolveFlowComplete?.();
+    pendingResolveFlowComplete = null;
+    loginInProgress = false;
   }
 
   const clientId = process.env.SCHWAB_CLIENT_ID;
