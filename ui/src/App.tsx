@@ -212,7 +212,16 @@ function PortfolioRow({
         >
           Verify
         </button>
-        {verifyMsg !== null && <span className="verify-msg">{verifyMsg}</span>}
+        {verifyMsg !== null && (
+          <span className="verify-msg">
+            {verifyMsg}
+            {verifyMsg !== "OK" &&
+              portfolio.hasCredentials &&
+              portfolio.brokerage === "schwab" && (
+                <> — Use <strong>Re-authorize Schwab</strong> above to refresh your token.</>
+              )}
+          </span>
+        )}
       </div>
       {showTradierForm && (
         <form
