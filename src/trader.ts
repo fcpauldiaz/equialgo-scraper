@@ -57,6 +57,11 @@ const SCHWAB_PLACE_ORDER_PATH = "/trader/v1/accounts/{accountNumber}/orders";
 const schwabClientByPortfolio = new Map<number, SchwabApiClient>();
 const accountHashByPortfolio = new Map<number, string>();
 
+export function clearSchwabCachesForPortfolio(portfolioId: number): void {
+  schwabClientByPortfolio.delete(portfolioId);
+  accountHashByPortfolio.delete(portfolioId);
+}
+
 async function resolveTradierAccountId(
   portfolioId: number,
   creds: { apiKey: string; accountId?: string; sandbox: boolean }
@@ -88,26 +93,43 @@ function parseAccountNumbersResponse(raw: unknown): AccountNumberEntry[] {
     .filter((e): e is AccountNumberEntry => e !== null);
 }
 
+function isUnauthorizedError(error: unknown): boolean {
+  if (isSchwabAuthError(error)) return true;
+  const msg = error instanceof Error ? error.message : String(error);
+  return msg.includes("401") || msg.includes("Unauthorized");
+}
+
 async function getAccountHashFromApi(portfolioId: number): Promise<string> {
   const cached = accountHashByPortfolio.get(portfolioId);
   if (cached) {
     return cached;
   }
-  const schwab = await initializeSchwabClient(portfolioId);
-  const raw = await schwab.trader.accounts.getAccountNumbers();
-  const entries = parseAccountNumbersResponse(raw);
-  console.log(
-    "Account numbers (hash) from getAccountNumbers():",
-    entries.length ? entries.map((e) => ({ accountNumber: e.accountNumber, hashPrefix: e.hashValue.length > 8 ? e.hashValue.slice(0, 8) + "…" : "…" })) : "(none)"
-  );
-  const first = entries[0];
-  if (!first?.hashValue?.trim()) {
-    throw new Error(
-      "Schwab getAccountNumbers() did not return a hash for this portfolio. Re-run Schwab OAuth login."
+  const doGet = async (): Promise<string> => {
+    const schwab = await initializeSchwabClient(portfolioId);
+    const raw = await schwab.trader.accounts.getAccountNumbers();
+    const entries = parseAccountNumbersResponse(raw);
+    console.log(
+      "Account numbers (hash) from getAccountNumbers():",
+      entries.length ? entries.map((e) => ({ accountNumber: e.accountNumber, hashPrefix: e.hashValue.length > 8 ? e.hashValue.slice(0, 8) + "…" : "…" })) : "(none)"
     );
+    const first = entries[0];
+    if (!first?.hashValue?.trim()) {
+      throw new Error(
+        "Schwab getAccountNumbers() did not return a hash for this portfolio. Re-run Schwab OAuth login."
+      );
+    }
+    accountHashByPortfolio.set(portfolioId, first.hashValue);
+    return first.hashValue;
+  };
+  try {
+    return await doGet();
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      clearSchwabCachesForPortfolio(portfolioId);
+      return doGet();
+    }
+    throw error;
   }
-  accountHashByPortfolio.set(portfolioId, first.hashValue);
-  return first.hashValue;
 }
 
 interface Position {
@@ -373,7 +395,11 @@ async function getCurrentPositions(
       }
     }
   } catch (error: unknown) {
-    if (isSchwabAuthError(error) && (error as { code?: string }).code === "TOKEN_EXPIRED") {
+    if (
+      (isSchwabAuthError(error) && (error as { code?: string }).code === "TOKEN_EXPIRED") ||
+      isUnauthorizedError(error)
+    ) {
+      clearSchwabCachesForPortfolio(portfolioId);
       await refreshTokensIfNeeded(portfolioId);
       return getCurrentPositions(portfolioId);
     }

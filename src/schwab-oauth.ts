@@ -2,6 +2,7 @@ import * as https from "https";
 // @ts-ignore - no types
 import selfsigned from "selfsigned";
 import { writeSchwabCredentials } from "./state";
+import { clearSchwabCachesForPortfolio } from "./trader";
 
 const REDIRECT_PORT = parseInt(process.env.SCHWAB_REDIRECT_PORT || "8765", 10);
 const REDIRECT_PATH = "/callback";
@@ -190,6 +191,7 @@ export async function startSchwabLoginFlow(
         redirectUri,
         ...(accountNumber?.trim() && { accountNumber: accountNumber.trim() }),
       });
+      clearSchwabCachesForPortfolio(resolvedPortfolioId);
 
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(
@@ -338,6 +340,7 @@ export async function handleSchwabCallback(
       redirectUri,
       ...(accountNumber?.trim() && { accountNumber: accountNumber.trim() }),
     });
+    clearSchwabCachesForPortfolio(resolvedPortfolioId);
 
     resolveFlow();
     return {
