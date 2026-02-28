@@ -147,6 +147,13 @@ describe('Trader', () => {
     });
 
     it('should successfully execute SELL orders', async () => {
+      mockSchwabClient.trader.accounts.getAccountByNumber.mockResolvedValue({
+        securitiesAccount: {
+          positions: [
+            { instrument: { symbol: 'MSFT' }, longQuantity: 5, shortQuantity: 0 },
+          ],
+        },
+      });
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -338,6 +345,13 @@ describe('Trader', () => {
     });
 
     it('should execute multiple mixed actions', async () => {
+      mockSchwabClient.trader.accounts.getAccountByNumber.mockResolvedValue({
+        securitiesAccount: {
+          positions: [
+            { instrument: { symbol: 'MSFT' }, longQuantity: 5, shortQuantity: 0 },
+          ],
+        },
+      });
       mockFetch
         .mockResolvedValueOnce({
           ok: true,
@@ -369,10 +383,62 @@ describe('Trader', () => {
 
       expect(result.successful).toHaveLength(3);
       expect(result.failed).toHaveLength(0);
+      expect(result.skipped).toHaveLength(0);
       const placeOrderFetches = mockFetch.mock.calls.filter(
         (call: unknown[]) => (call[0] as string).includes('/orders')
       );
       expect(placeOrderFetches).toHaveLength(3);
+    });
+
+    it('should skip SELL when no position exists', async () => {
+      const { executeTradesFromActions } = await import('../src/trader');
+      const actions: PortfolioAction[] = [
+        { symbol: 'XYZ', action: 'SELL', shares: 10, price: 50.0 },
+      ];
+
+      const result = await executeTradesFromActions(actions, 1);
+
+      expect(result.successful).toHaveLength(0);
+      expect(result.skipped).toHaveLength(1);
+      expect(result.skipped[0]).toMatchObject({
+        symbol: 'XYZ',
+        reason: 'No position to exit',
+      });
+      const placeOrderFetches = mockFetch.mock.calls.filter(
+        (call: unknown[]) => (call[0] as string).includes('/orders')
+      );
+      expect(placeOrderFetches).toHaveLength(0);
+    });
+
+    it('should sell only up to existing position size', async () => {
+      mockSchwabClient.trader.accounts.getAccountByNumber.mockResolvedValue({
+        securitiesAccount: {
+          positions: [
+            { instrument: { symbol: 'DE' }, longQuantity: 5, shortQuantity: 0 },
+          ],
+        },
+      });
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ orderId: 1 })),
+        json: () => Promise.resolve({ orderId: 1 }),
+      } as Response);
+
+      const { executeTradesFromActions } = await import('../src/trader');
+      const actions: PortfolioAction[] = [
+        { symbol: 'DE', action: 'SELL', shares: 14, price: 624.96 },
+      ];
+
+      const result = await executeTradesFromActions(actions, 1);
+
+      expect(result.successful).toHaveLength(1);
+      expect(result.successful[0]).toMatchObject({
+        symbol: 'DE',
+        action: 'SELL',
+        shares: 5,
+        price: 624.96,
+      });
     });
 
     it('should handle missing credentials', async () => {
@@ -386,7 +452,12 @@ describe('Trader', () => {
 
       const { executeTradesFromActions: executeTrades } = await import('../src/trader');
 
-      await expect(executeTrades(actions, 1)).rejects.toThrow(/Schwab credentials are required|OAuth login/);
+      const result = await executeTrades(actions, 1);
+
+      expect(result.successful).toHaveLength(0);
+      expect(result.failed).toHaveLength(1);
+      expect(result.failed[0].symbol).toBe('ALL');
+      expect(result.failed[0].error).toMatch(/Failed to fetch positions|Schwab credentials|OAuth login/);
     });
 
     it('should execute orders via Tradier when portfolio has Tradier credentials', async () => {
@@ -396,6 +467,7 @@ describe('Trader', () => {
         accountId: 'VA123',
         sandbox: true,
       });
+      mockGetTradierPositions.mockResolvedValue([]);
       process.env.TRADIER_ENABLE_TRADING = 'true';
       jest.resetModules();
 

@@ -182,6 +182,15 @@ function PortfolioRow({
         {showPositionsLink && portfolio.hasCredentials && (
           <a href={`#/portfolios/${portfolio.id}`}>Positions</a>
         )}
+        {portfolio.hasCredentials && portfolio.brokerage === "schwab" && (
+          <button
+            type="button"
+            onClick={() => onLogin(portfolio.id)}
+            disabled={loginInProgress}
+          >
+            Re-authorize Schwab
+          </button>
+        )}
         {!portfolio.hasCredentials && (
           <>
             <button
