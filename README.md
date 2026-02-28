@@ -67,7 +67,7 @@ Configuration is done via environment variables. Create a `.env` file in the pro
 | `DATABASE_AUTH_TOKEN` | *Required* | Turso/LibSQL authentication token |
 | `SCHWAB_CLIENT_ID` | *Required for trading* | Charles Schwab OAuth client ID |
 | `SCHWAB_CLIENT_SECRET` | *Required for trading* | Charles Schwab OAuth client secret |
-| `SCHWAB_REDIRECT_URI` | *Required for trading* | Charles Schwab OAuth redirect URI |
+| `SCHWAB_REDIRECT_URI` | *(optional)* | When set, OAuth uses this callback URL (e.g. `https://your-domain.com/api/schwab/callback`) and the callback is served by the app; when unset, local callback is `https://127.0.0.1:8765/callback` |
 | `SCHWAB_ACCOUNT_NUMBER` | *Required for trading* | Charles Schwab account number/hash |
 | `SCHWAB_ACCESS_TOKEN` | *Optional* | Schwab access token (if using stored tokens) |
 | `SCHWAB_REFRESH_TOKEN` | *Optional* | Schwab refresh token (if using stored tokens) |

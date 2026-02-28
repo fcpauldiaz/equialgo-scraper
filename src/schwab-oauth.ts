@@ -7,7 +7,10 @@ const REDIRECT_PORT = parseInt(process.env.SCHWAB_REDIRECT_PORT || "8765", 10);
 const REDIRECT_PATH = "/callback";
 const HOST = "127.0.0.1";
 
+const DEFAULT_REDIRECT_URI = `https://${HOST}:${REDIRECT_PORT}${REDIRECT_PATH}`;
+
 let loginInProgress = false;
+let pendingResolveFlowComplete: (() => void) | null = null;
 
 export function isSchwabLoginInProgress(): boolean {
   return loginInProgress;
@@ -31,7 +34,9 @@ export async function startSchwabLoginFlow(
     throw new Error("SCHWAB_CLIENT_ID and SCHWAB_CLIENT_SECRET are required");
   }
 
-  const redirectUri = `https://${HOST}:${REDIRECT_PORT}${REDIRECT_PATH}`;
+  const envRedirectUri = process.env.SCHWAB_REDIRECT_URI?.trim();
+  const useRemoteCallback = Boolean(envRedirectUri);
+  const redirectUri = useRemoteCallback ? envRedirectUri : DEFAULT_REDIRECT_URI;
 
   const attrs = [{ name: "commonName", value: HOST }];
   const pems = await selfsigned.generate(attrs, {
@@ -78,6 +83,15 @@ export async function startSchwabLoginFlow(
   const flowComplete = new Promise<void>((r) => {
     resolveFlowComplete = r;
   });
+
+  if (useRemoteCallback) {
+    pendingResolveFlowComplete = () => {
+      loginInProgress = false;
+      resolveFlowComplete();
+      pendingResolveFlowComplete = null;
+    };
+    return Promise.resolve({ authUrl, flowComplete });
+  }
 
   const server = https.createServer(httpsOptions, async (req, res) => {
     const url = new URL(req.url || "/", `https://${HOST}:${REDIRECT_PORT}`);
@@ -202,4 +216,136 @@ export async function startSchwabLoginFlow(
       reject(err);
     });
   });
+}
+
+const POST_SCRIPT =
+  '<script>if (window.opener) window.opener.postMessage({ type: \'schwab-login-done\', success: false }, \'*\');</script>';
+
+export interface HandleSchwabCallbackParams {
+  code: string | null;
+  state: string | null;
+  error: string | null;
+  error_description?: string | null;
+}
+
+export interface HandleSchwabCallbackResult {
+  html: string;
+}
+
+export async function handleSchwabCallback(
+  params: HandleSchwabCallbackParams
+): Promise<HandleSchwabCallbackResult> {
+  const redirectUri = process.env.SCHWAB_REDIRECT_URI?.trim();
+  if (!redirectUri) {
+    return {
+      html: `<html><body><h1>Configuration error</h1><p>SCHWAB_REDIRECT_URI is not set. Use this callback only when running with a custom redirect URI.</p>${POST_SCRIPT}</body></html>`,
+    };
+  }
+
+  const resolveFlow = () => {
+    pendingResolveFlowComplete?.();
+    pendingResolveFlowComplete = null;
+    loginInProgress = false;
+  };
+
+  if (params.error) {
+    resolveFlow();
+    return {
+      html: `<html><body><h1>Login failed</h1><p>Error: ${params.error}</p><p>${params.error_description ?? ""}</p>${POST_SCRIPT}</body></html>`,
+    };
+  }
+
+  if (!params.code) {
+    resolveFlow();
+    const tip = `Callback URL must be exactly: <strong>${redirectUri}</strong> (no trailing slash).`;
+    return {
+      html: `<html><body><h1>Missing code</h1><p>No authorization code in callback URL.</p><p>${tip}</p>${POST_SCRIPT}</body></html>`,
+    };
+  }
+
+  const resolvedPortfolioId = params.state ? parseInt(params.state, 10) : 0;
+  if (Number.isNaN(resolvedPortfolioId) || resolvedPortfolioId <= 0) {
+    resolveFlow();
+    return {
+      html: `<html><body><h1>Invalid state</h1><p>Could not determine portfolio.</p>${POST_SCRIPT}</body></html>`,
+    };
+  }
+
+  const clientId = process.env.SCHWAB_CLIENT_ID;
+  const clientSecret = process.env.SCHWAB_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    resolveFlow();
+    return {
+      html: `<html><body><h1>Configuration error</h1><p>SCHWAB_CLIENT_ID and SCHWAB_CLIENT_SECRET are required.</p>${POST_SCRIPT}</body></html>`,
+    };
+  }
+
+  const importDynamic = new Function("specifier", "return import(specifier)");
+  const schwabApi = await importDynamic("@sudowealth/schwab-api");
+  const { createSchwabAuth, createApiClient } = schwabApi;
+
+  const auth = createSchwabAuth({
+    oauthConfig: {
+      clientId,
+      clientSecret,
+      redirectUri,
+    },
+  });
+
+  try {
+    const tokens = await auth.exchangeCode(params.code, params.state ?? undefined);
+    const accessToken =
+      (tokens as { accessToken?: string; access_token?: string }).accessToken ??
+      (tokens as { access_token?: string }).access_token;
+    const refreshToken =
+      (tokens as { refreshToken?: string; refresh_token?: string })
+        .refreshToken ?? (tokens as { refresh_token?: string }).refresh_token;
+
+    if (!accessToken || !refreshToken) {
+      throw new Error("Tokens missing accessToken or refreshToken");
+    }
+
+    const apiClient = createApiClient({
+      auth,
+      middleware: {
+        rateLimit: { maxRequests: 120, windowMs: 60_000 },
+        retry: { maxAttempts: 3, baseDelayMs: 1000 },
+      },
+    });
+
+    let accountNumber: string | undefined;
+    try {
+      const raw = await apiClient.trader.accounts.getAccounts();
+      const list = Array.isArray(raw)
+        ? raw
+        : (raw as { accounts?: unknown[] })?.accounts;
+      const first = Array.isArray(list) ? list[0] : undefined;
+      const item = first as { accountNumber?: string; securitiesAccount?: { accountNumber?: string } } | undefined;
+      if (item?.securitiesAccount?.accountNumber) {
+        accountNumber = String(item.securitiesAccount.accountNumber);
+      } else if (item?.accountNumber) {
+        accountNumber = String(item.accountNumber);
+      }
+    } catch {
+      // optional
+    }
+
+    await writeSchwabCredentials(resolvedPortfolioId, {
+      accessToken,
+      refreshToken,
+      redirectUri,
+      ...(accountNumber?.trim() && { accountNumber: accountNumber.trim() }),
+    });
+
+    resolveFlow();
+    return {
+      html: `<html><body style="font-family:sans-serif;max-width:480px;margin:2em auto;padding:1em;"><h1 style="color:green;">✓ Success</h1><p>Credentials saved for this portfolio.</p><p>You can close this tab.</p><script>if (window.opener) window.opener.postMessage({ type: 'schwab-login-done', success: true }, '*');</script></body></html>`,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    resolveFlow();
+    return {
+      html: `<html><body style="font-family:sans-serif;max-width:520px;margin:2em auto;padding:1em;"><h1 style="color:red;">Token exchange failed</h1><p>${msg}</p><p>Your Schwab app Callback URL must be exactly: <strong>${redirectUri}</strong></p><script>if (window.opener) window.opener.postMessage({ type: 'schwab-login-done', success: false }, '*');</script></body></html>`,
+    };
+  }
 }

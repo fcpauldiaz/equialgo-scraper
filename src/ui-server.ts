@@ -7,7 +7,11 @@ import {
   readState,
   writeTradierCredentials,
 } from "./state";
-import { startSchwabLoginFlow, isSchwabLoginInProgress } from "./schwab-oauth";
+import {
+  startSchwabLoginFlow,
+  isSchwabLoginInProgress,
+  handleSchwabCallback,
+} from "./schwab-oauth";
 import { getTradierAccountId } from "./tradier-client";
 import { verifyConnection, getPortfolioPositions } from "./trader";
 
@@ -157,6 +161,44 @@ export function startUiServer(): http.Server {
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         sendJson(res, 500, { error: message });
+      }
+      return;
+    }
+
+    const schwabRedirectUri = process.env.SCHWAB_REDIRECT_URI?.trim();
+    const schwabCallbackPath =
+      schwabRedirectUri &&
+      (() => {
+        try {
+          return new URL(schwabRedirectUri).pathname;
+        } catch {
+          return null;
+        }
+      })();
+    if (
+      schwabCallbackPath &&
+      pathname === schwabCallbackPath &&
+      method === "GET"
+    ) {
+      try {
+        const code = url.searchParams.get("code");
+        const state = url.searchParams.get("state");
+        const error = url.searchParams.get("error");
+        const errorDescription = url.searchParams.get("error_description");
+        const { html } = await handleSchwabCallback({
+          code,
+          state,
+          error,
+          error_description: errorDescription,
+        });
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(html);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        res.writeHead(500, { "Content-Type": "text/html" });
+        res.end(
+          `<html><body><h1>Callback error</h1><p>${message}</p></body></html>`
+        );
       }
       return;
     }
