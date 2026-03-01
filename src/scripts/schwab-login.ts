@@ -3,7 +3,7 @@
  * Uses the shared OAuth flow for portfolio id 1 (Default), opens the browser.
  *
  * Prerequisites in .env: SCHWAB_CLIENT_ID, SCHWAB_CLIENT_SECRET, DATABASE_URL, DATABASE_AUTH_TOKEN
- * Callback URL in Schwab app must be: https://127.0.0.1:8765/callback
+ * Callback URL in Schwab app must be: http://127.0.0.1:8765/callback
  *
  * Run: pnpm run build && pnpm run schwab-login
  */
@@ -37,7 +37,7 @@ async function main(): Promise<void> {
 
   await initializeDatabase();
 
-  const redirectUri = `https://127.0.0.1:${process.env.SCHWAB_REDIRECT_PORT || "8765"}/callback`;
+  const redirectUri = `http://127.0.0.1:${process.env.SCHWAB_REDIRECT_PORT || "8765"}/callback`;
   console.log("Using redirect URI:", redirectUri);
   console.log(
     "Ensure this exact URI is added to your Schwab app's callback URLs.\n"

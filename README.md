@@ -217,7 +217,7 @@ When the service is running, an admin UI is available for adding portfolios and 
    - `DATABASE_URL` and `DATABASE_AUTH_TOKEN`
 
 2. **In your [Schwab app](https://developer.schwab.com/dashboard/apps)** add this callback URL:
-   - `https://127.0.0.1:8765/callback`
+   - `http://127.0.0.1:8765/callback`
 
 3. **Start the service** (build first):
    ```bash

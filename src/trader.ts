@@ -102,11 +102,14 @@ function isUnauthorizedError(error: unknown): boolean {
 async function getAccountHashFromApi(portfolioId: number): Promise<string> {
   const cached = accountHashByPortfolio.get(portfolioId);
   if (cached) {
+    console.log("Account hash from cache:", cached);
     return cached;
   }
   const doGet = async (): Promise<string> => {
     const schwab = await initializeSchwabClient(portfolioId);
+    console.log("Initialized Schwab client");
     const raw = await schwab.trader.accounts.getAccountNumbers();
+    console.log("Raw account numbers:", raw);
     const entries = parseAccountNumbersResponse(raw);
     console.log(
       "Account numbers (hash) from getAccountNumbers():",
@@ -125,7 +128,10 @@ async function getAccountHashFromApi(portfolioId: number): Promise<string> {
     return await doGet();
   } catch (error) {
     if (isUnauthorizedError(error)) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.warn(`Schwab API Unauthorized (portfolio ${portfolioId}), clearing cache and retrying:`, msg);
       clearSchwabCachesForPortfolio(portfolioId);
+      await refreshTokensIfNeeded(portfolioId);
       return doGet();
     }
     throw error;
@@ -159,7 +165,7 @@ async function initializeSchwabClient(portfolioId: number): Promise<SchwabApiCli
   const redirectUri =
     process.env.SCHWAB_REDIRECT_URI ||
     credentialsFromDb.redirectUri ||
-    "https://127.0.0.1:8765/callback";
+    "http://127.0.0.1:8765/callback";
 
   if (!clientId || !clientSecret) {
     throw new Error(
@@ -225,7 +231,7 @@ async function refreshTokensIfNeeded(portfolioId: number): Promise<TokenData> {
   const redirectUri =
     process.env.SCHWAB_REDIRECT_URI ??
     creds?.redirectUri ??
-    "https://127.0.0.1:8765/callback";
+    "http://127.0.0.1:8765/callback";
 
   const auth = createSchwabAuth({
     oauthConfig: {
@@ -267,7 +273,13 @@ async function refreshTokensIfNeeded(portfolioId: number): Promise<TokenData> {
   } catch (error: unknown) {
     if (isSchwabAuthError(error) && (error as { code?: string }).code === "TOKEN_EXPIRED") {
       throw new Error(
-        "Refresh token expired. Please re-authenticate through Schwab's OAuth flow."
+        "Refresh token expired. Use Re-authorize Schwab in the UI to sign in again."
+      );
+    }
+    const msg = error instanceof Error ? error.message : String(error);
+    if (/cannot refresh|no valid tokens|invalid.*token|token.*expired/i.test(msg)) {
+      throw new Error(
+        "Schwab tokens expired or invalid. Use Re-authorize Schwab in the UI to sign in again."
       );
     }
     throw error;
@@ -341,6 +353,7 @@ async function getCurrentPositions(
   portfolioId: number
 ): Promise<Map<string, Position>> {
   const brokerage = await getPortfolioBrokerage(portfolioId);
+  console.log("Brokerage:", brokerage);
   if (brokerage === "tradier") {
     const creds = await readTradierCredentials(portfolioId);
     if (!creds) {
@@ -358,11 +371,12 @@ async function getCurrentPositions(
     }
     return positionsMap;
   }
-
+  console.log("Getting current positions for Schwab portfolio:", portfolioId);
   const schwab = await initializeSchwabClient(portfolioId);
   const positionsMap = new Map<string, Position>();
 
   const accountNumber = await getAccountHashFromApi(portfolioId);
+  console.log("Account number:", accountNumber, "portfolioId:", portfolioId);
   try {
     const account = await schwab.trader.accounts.getAccountByNumber({
       pathParams: { accountNumber },
@@ -399,6 +413,8 @@ async function getCurrentPositions(
       (isSchwabAuthError(error) && (error as { code?: string }).code === "TOKEN_EXPIRED") ||
       isUnauthorizedError(error)
     ) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.warn(`Schwab API Unauthorized (portfolio ${portfolioId}), clearing cache and retrying:`, msg);
       clearSchwabCachesForPortfolio(portfolioId);
       await refreshTokensIfNeeded(portfolioId);
       return getCurrentPositions(portfolioId);
