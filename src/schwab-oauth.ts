@@ -216,7 +216,7 @@ export async function startSchwabLoginFlow(
 
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(
-        `<html><body style="font-family:sans-serif;max-width:480px;margin:2em auto;padding:1em;"><h1 style="color:green;">✓ Success</h1><p>Credentials saved for this portfolio.</p><p>You can close this tab.</p><script>if (window.opener) window.opener.postMessage({ type: 'schwab-login-done', success: true }, '*');</script></body></html>`
+        `<html><body style="font-family:sans-serif;max-width:480px;margin:2em auto;padding:1em;"><h1 style="color:green;">✅ Success</h1><p>Credentials saved for this portfolio.</p><p>You can close this tab.</p><script>if (window.opener) window.opener.postMessage({ type: 'schwab-login-done', success: true }, '*');</script></body></html>`
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
