@@ -67,33 +67,19 @@ export function scaleActionsToPortfolioSize(
   }
 
   const buyActions = actions.filter((a) => a.action === "BUY");
-  const totalBuyValue = buyActions.reduce(
-    (sum, a) => sum + a.shares * a.price,
-    0
-  );
-
-  if (totalBuyValue === 0) {
-    return actions;
-  }
-
-  const scalingFactor = targetPortfolioSize / totalBuyValue;
   const numBuys = buyActions.length;
-  const maxPositionValue =
+  const allocationPerPosition =
     numBuys > 0 ? targetPortfolioSize / numBuys : targetPortfolioSize;
 
   return actions.map((action) => {
-    const scaledShares = Math.floor(action.shares * scalingFactor);
     if (action.action === "BUY") {
-      const maxShares =
-        action.price > 0 ? Math.floor(maxPositionValue / action.price) : 0;
-      const cappedShares = Math.min(scaledShares, maxShares);
-      const shares = cappedShares > 0 ? cappedShares : 1;
+      const shares =
+        action.price > 0
+          ? Math.max(1, Math.floor(allocationPerPosition / action.price))
+          : 1;
       return { ...action, shares };
     }
-    return {
-      ...action,
-      shares: scaledShares > 0 ? scaledShares : 1,
-    };
+    return { ...action };
   });
 }
 
