@@ -8,6 +8,8 @@ import {
   verifyPortfolio,
   fetchStatistics,
   fetchPortfolioPositions,
+  updatePortfolioSystemTraderStrategy,
+  SYSTEMTRADER_STRATEGY_SLUGS,
   type PortfolioItem,
 } from "./api";
 
@@ -87,6 +89,23 @@ function useVerifyPortfolio() {
   });
 }
 
+function usePortfolioStrategyMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      portfolioId,
+      slug,
+    }: {
+      portfolioId: number;
+      slug: string;
+    }) => updatePortfolioSystemTraderStrategy(portfolioId, slug),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: PORTFOLIOS_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: STATISTICS_QUERY_KEY });
+    },
+  });
+}
+
 type Route = { view: "dashboard" | "portfolios" | "portfolio-detail"; portfolioId?: number };
 
 function getRoute(): Route {
@@ -126,6 +145,8 @@ function PortfolioRow({
   onShowTradierForm,
   onCloseTradierForm,
   showPositionsLink,
+  onStrategyChange,
+  strategyUpdatePending,
 }: {
   portfolio: PortfolioItem;
   loginInProgress: boolean;
@@ -134,6 +155,8 @@ function PortfolioRow({
   onShowTradierForm: () => void;
   onCloseTradierForm: () => void;
   showPositionsLink?: boolean;
+  onStrategyChange: (portfolioId: number, slug: string) => void;
+  strategyUpdatePending: boolean;
 }) {
   const verifyMutation = useVerifyPortfolio();
   const connectTradierMutation = useConnectTradier();
@@ -174,10 +197,35 @@ function PortfolioRow({
 
   return (
     <li className="portfolio-row">
-      <span className="portfolio-name">{portfolio.name}</span>
-      <span className={`status ${portfolio.hasCredentials ? "connected" : "disconnected"}`}>
-        {statusLabel}
-      </span>
+      <div className="portfolio-row-main">
+        <span className="portfolio-name">{portfolio.name}</span>
+        <span className={`status ${portfolio.hasCredentials ? "connected" : "disconnected"}`}>
+          {statusLabel}
+        </span>
+      </div>
+      <div style={{ marginTop: "0.35rem", marginBottom: "0.25rem" }}>
+        <label style={{ fontSize: "0.9rem" }}>
+          Signal source{" "}
+          <select
+            value={portfolio.systemtraderSlug}
+            disabled={strategyUpdatePending}
+            onChange={(e) => onStrategyChange(portfolio.id, e.target.value)}
+          >
+            {SYSTEMTRADER_STRATEGY_SLUGS.map((slug) => (
+              <option key={slug} value={slug}>
+                {slug.charAt(0).toUpperCase() + slug.slice(1)}
+              </option>
+            ))}
+          </select>
+        </label>
+        {portfolio.lastProcessedDate != null && (
+          <span style={{ fontSize: "0.8rem", marginLeft: "0.75rem", color: "#555" }}>
+            Last run: {portfolio.lastProcessedDate}
+            {portfolio.lastProcessedSystemtraderSlug != null &&
+              ` (${portfolio.lastProcessedSystemtraderSlug})`}
+          </span>
+        )}
+      </div>
       <div className="portfolio-actions">
         {showPositionsLink && portfolio.hasCredentials && (
           <a href={`#/portfolios/${portfolio.id}`}>Positions</a>
@@ -268,9 +316,13 @@ function PortfolioRow({
 function DashboardView({
   loginInProgress,
   onLogin,
+  strategyMutation,
+  portfolioUrlEnvOverride,
 }: {
   loginInProgress: boolean;
   onLogin: (id: number) => void;
+  strategyMutation: ReturnType<typeof usePortfolioStrategyMutation>;
+  portfolioUrlEnvOverride: boolean;
 }) {
   const { data: stats, isLoading, error } = useStatistics();
   const { data: portfolios = [] } = usePortfolios();
@@ -284,9 +336,9 @@ function DashboardView({
         {error && <p className="error-msg">{String(error)}</p>}
         {stats && (
           <ul className="stats-list">
-            <li>Last processed date: {stats.lastProcessedDate ?? "—"}</li>
+            <li>Most recent processed date: {stats.lastProcessedDate ?? "—"}</li>
             {stats.lastProcessedTimestamp != null && (
-              <li>Last run: {new Date(stats.lastProcessedTimestamp).toLocaleString()}</li>
+              <li>Most recent run: {new Date(stats.lastProcessedTimestamp).toLocaleString()}</li>
             )}
             <li>Portfolios: {stats.portfolioCount}</li>
             <li>Connected: {stats.connectedCount}</li>
@@ -295,6 +347,17 @@ function DashboardView({
       </section>
       <section className="dashboard-portfolios">
         <h2>Portfolios</h2>
+        <p style={{ fontSize: "0.9rem", color: "#555", marginBottom: "0.75rem" }}>
+          Each portfolio has its own SystemTrader signal source. Trades use the strategy selected for that
+          portfolio.
+        </p>
+        {portfolioUrlEnvOverride && (
+          <p className="error-msg" style={{ marginTop: 0 }}>
+            <code>PORTFOLIO_URL</code> is set in the environment, so every strategy uses that URL for
+            scraping until you unset it. Per-portfolio selections still apply to deduplication when the
+            variable is removed.
+          </p>
+        )}
         <ul>
           {portfolios.map((p) => (
             <PortfolioRow
@@ -306,15 +369,30 @@ function DashboardView({
               onShowTradierForm={() => {}}
               onCloseTradierForm={() => {}}
               showPositionsLink
+              onStrategyChange={(id, slug) => strategyMutation.mutate({ portfolioId: id, slug })}
+              strategyUpdatePending={strategyMutation.isPending}
             />
           ))}
         </ul>
+        {strategyMutation.isError && (
+          <p className="error-msg">{String(strategyMutation.error)}</p>
+        )}
       </section>
     </>
   );
 }
 
-function PortfolioDetailView({ portfolioId, portfolios }: { portfolioId: number; portfolios: PortfolioItem[] }) {
+function PortfolioDetailView({
+  portfolioId,
+  portfolios,
+  strategyMutation,
+  portfolioUrlEnvOverride,
+}: {
+  portfolioId: number;
+  portfolios: PortfolioItem[];
+  strategyMutation: ReturnType<typeof usePortfolioStrategyMutation>;
+  portfolioUrlEnvOverride: boolean;
+}) {
   const portfolio = portfolios.find((p) => p.id === portfolioId);
   const { data: positions, isLoading, error } = usePortfolioPositions(portfolioId);
 
@@ -325,6 +403,34 @@ function PortfolioDetailView({ portfolioId, portfolios }: { portfolioId: number;
         {portfolio ? ` / ${portfolio.name}` : ` / ${portfolioId}`}
       </p>
       <h1>{portfolio ? portfolio.name : `Portfolio ${portfolioId}`}</h1>
+      {portfolio && (
+        <div style={{ marginBottom: "1rem" }}>
+          <label style={{ fontSize: "0.95rem" }}>
+            Signal source{" "}
+            <select
+              value={portfolio.systemtraderSlug}
+              disabled={strategyMutation.isPending}
+              onChange={(e) =>
+                strategyMutation.mutate({ portfolioId: portfolio.id, slug: e.target.value })
+              }
+            >
+              {SYSTEMTRADER_STRATEGY_SLUGS.map((slug) => (
+                <option key={slug} value={slug}>
+                  {slug.charAt(0).toUpperCase() + slug.slice(1)}
+                </option>
+              ))}
+            </select>
+          </label>
+          {portfolioUrlEnvOverride && (
+            <p className="error-msg" style={{ fontSize: "0.85rem", marginTop: "0.5rem" }}>
+              <code>PORTFOLIO_URL</code> overrides scrape URLs for all strategies.
+            </p>
+          )}
+          {strategyMutation.isError && (
+            <p className="error-msg">{String(strategyMutation.error)}</p>
+          )}
+        </div>
+      )}
       {!portfolio?.hasCredentials && (
         <p className="error-msg">Not connected. Link this portfolio via Portfolios (Schwab or Tradier).</p>
       )}
@@ -384,9 +490,13 @@ function PortfolioDetailView({ portfolioId, portfolios }: { portfolioId: number;
 function PortfoliosView({
   loginInProgress,
   onLogin,
+  strategyMutation,
+  portfolioUrlEnvOverride,
 }: {
   loginInProgress: boolean;
   onLogin: (id: number) => void;
+  strategyMutation: ReturnType<typeof usePortfolioStrategyMutation>;
+  portfolioUrlEnvOverride: boolean;
 }) {
   const { data: portfolios = [], isLoading, error } = usePortfolios();
   const createMutation = useCreatePortfolio();
@@ -405,7 +515,12 @@ function PortfoliosView({
   return (
     <>
       <h1>Portfolios</h1>
-      <p>Add portfolios and link each to Schwab (OAuth) or Tradier (API key).</p>
+      <p>Add portfolios and link each to Schwab (OAuth) or Tradier (API key). Set the SystemTrader signal source per portfolio.</p>
+      {portfolioUrlEnvOverride && (
+        <p className="error-msg">
+          <code>PORTFOLIO_URL</code> is set; all strategies use that URL until you unset it.
+        </p>
+      )}
 
       {isLoading && <p>Loading…</p>}
       {error && <p className="error-msg">{String(error)}</p>}
@@ -420,9 +535,14 @@ function PortfoliosView({
             showTradierForm={showTradierFormForId === p.id}
             onShowTradierForm={() => setShowTradierFormForId(p.id)}
             onCloseTradierForm={() => setShowTradierFormForId(null)}
+            onStrategyChange={(id, slug) => strategyMutation.mutate({ portfolioId: id, slug })}
+            strategyUpdatePending={strategyMutation.isPending}
           />
         ))}
       </ul>
+      {strategyMutation.isError && (
+        <p className="error-msg">{String(strategyMutation.error)}</p>
+      )}
 
       <div className="add-form">
         <input
@@ -454,10 +574,13 @@ function PortfoliosView({
 export default function App() {
   const [route, setRoute] = useState<Route>(getRoute);
   const loginMutation = useStartSchwabLogin();
+  const strategyMutation = usePortfolioStrategyMutation();
   const [loginInProgress, setLoginInProgress] = useState(false);
   const loginPopupRef = useRef<Window | null>(null);
   const queryClient = useQueryClient();
   const { data: portfolios = [] } = usePortfolios();
+  const { data: stats } = useStatistics();
+  const portfolioUrlEnvOverride = stats?.portfolioUrlEnvOverride ?? false;
 
   useEffect(() => {
     const onHashChange = () => setRoute(getRoute());
@@ -506,13 +629,28 @@ export default function App() {
     <>
       <Nav route={route} />
       {route.view === "dashboard" && (
-        <DashboardView loginInProgress={loginInProgress} onLogin={handleLogin} />
+        <DashboardView
+          loginInProgress={loginInProgress}
+          onLogin={handleLogin}
+          strategyMutation={strategyMutation}
+          portfolioUrlEnvOverride={portfolioUrlEnvOverride}
+        />
       )}
       {route.view === "portfolios" && (
-        <PortfoliosView loginInProgress={loginInProgress} onLogin={handleLogin} />
+        <PortfoliosView
+          loginInProgress={loginInProgress}
+          onLogin={handleLogin}
+          strategyMutation={strategyMutation}
+          portfolioUrlEnvOverride={portfolioUrlEnvOverride}
+        />
       )}
       {route.view === "portfolio-detail" && route.portfolioId != null && (
-        <PortfolioDetailView portfolioId={route.portfolioId} portfolios={portfolios} />
+        <PortfolioDetailView
+          portfolioId={route.portfolioId}
+          portfolios={portfolios}
+          strategyMutation={strategyMutation}
+          portfolioUrlEnvOverride={portfolioUrlEnvOverride}
+        />
       )}
     </>
   );

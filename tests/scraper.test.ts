@@ -1,13 +1,14 @@
 import { scrapePortfolioData, closeBrowser } from '../src/scraper';
-import { ScrapedPortfolioData, PortfolioAction } from '../src/types';
 import puppeteer from 'puppeteer';
 
 jest.mock('puppeteer');
 
+const testPortfolioUrl =
+  process.env.PORTFOLIO_URL || 'https://test.example.com/portfolio';
+
 describe('Scraper', () => {
   let mockBrowser: any;
   let mockPage: any;
-  let originalBrowser: any;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -52,7 +53,7 @@ describe('Scraper', () => {
 
       mockPage.evaluate.mockResolvedValue(mockActions);
 
-      const result = await scrapePortfolioData();
+      const result = await scrapePortfolioData(testPortfolioUrl);
 
       expect(result).toHaveProperty('date');
       expect(result).toHaveProperty('actions');
@@ -73,12 +74,12 @@ describe('Scraper', () => {
       expect(mockPage.evaluate).toHaveBeenCalled();
     });
 
-    it('should handle empty actions table', async () => {
+    it('should return empty actions when table has no rows', async () => {
       mockPage.evaluate.mockResolvedValue([]);
 
-      await expect(scrapePortfolioData()).rejects.toThrow(
-        "No actions found in 'Today's Actions' table"
-      );
+      const result = await scrapePortfolioData(testPortfolioUrl);
+
+      expect(result.actions).toEqual([]);
     });
 
     it('should retry on failure', async () => {
@@ -88,20 +89,25 @@ describe('Scraper', () => {
           { symbol: 'AAPL', action: 'BUY', shares: 100, price: 150.50 },
         ]);
 
-      const result = await scrapePortfolioData();
+      const result = await scrapePortfolioData(testPortfolioUrl);
 
       expect(result.actions).toHaveLength(1);
       expect(mockPage.evaluate).toHaveBeenCalledTimes(2);
     });
 
-    it('should handle HTTP errors', async () => {
-      mockPage.goto.mockResolvedValueOnce({
-        ok: () => false,
-        status: () => 500,
-        statusText: () => 'Internal Server Error',
-      });
+    it('does not throw when portfolio goto returns non-ok HTTP', async () => {
+      mockPage.goto
+        .mockResolvedValueOnce({ ok: () => true, status: () => 200 })
+        .mockResolvedValueOnce({
+          ok: () => false,
+          status: () => 500,
+          statusText: () => 'Internal Server Error',
+        });
+      mockPage.evaluate.mockResolvedValue([]);
 
-      await expect(scrapePortfolioData()).rejects.toThrow();
+      const result = await scrapePortfolioData(testPortfolioUrl);
+
+      expect(result.actions).toEqual([]);
     });
 
     it('should normalize INCREASE/DECREASE actions to BUY/SELL', async () => {
@@ -112,7 +118,7 @@ describe('Scraper', () => {
 
       mockPage.evaluate.mockResolvedValue(mockActions);
 
-      const result = await scrapePortfolioData();
+      const result = await scrapePortfolioData(testPortfolioUrl);
 
       expect(result.actions[0].action).toBe('BUY');
       expect(result.actions[1].action).toBe('SELL');
@@ -125,7 +131,7 @@ describe('Scraper', () => {
 
       mockPage.evaluate.mockResolvedValue(mockActions);
 
-      const result = await scrapePortfolioData();
+      const result = await scrapePortfolioData(testPortfolioUrl);
 
       expect(result.actions[0].price).toBe(1500.50);
     });
@@ -137,7 +143,7 @@ describe('Scraper', () => {
 
       mockPage.evaluate.mockResolvedValue(mockActions);
 
-      const result = await scrapePortfolioData();
+      const result = await scrapePortfolioData(testPortfolioUrl);
 
       expect(result.actions[0].shares).toBeGreaterThan(0);
       expect(result.actions[0].action).toBe('SELL');
@@ -152,7 +158,7 @@ describe('Scraper', () => {
 
       mockPage.evaluate.mockResolvedValue(mockActions.filter(a => a.symbol && a.shares > 0 && a.price > 0 && (a.action === 'BUY' || a.action === 'SELL')));
 
-      const result = await scrapePortfolioData();
+      const result = await scrapePortfolioData(testPortfolioUrl);
 
       expect(result.actions.length).toBeGreaterThanOrEqual(1);
       expect(result.actions.every(a => a.symbol && a.shares > 0 && a.price > 0)).toBe(true);
@@ -166,7 +172,7 @@ describe('Scraper', () => {
       ];
       mockPage.evaluate.mockResolvedValue(mockActions);
 
-      await scrapePortfolioData();
+      await scrapePortfolioData(testPortfolioUrl);
       await closeBrowser();
 
       expect(mockBrowser.close).toHaveBeenCalled();

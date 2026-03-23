@@ -4,8 +4,9 @@ import * as path from "path";
 import {
   listPortfolios,
   createPortfolio,
-  readState,
+  readJobStatistics,
   writeTradierCredentials,
+  updatePortfolioSystemTraderSlug,
 } from "./state";
 import { startSchwabLoginFlow, handleSchwabCallback } from "./schwab-oauth";
 import { getTradierAccountId } from "./tradier-client";
@@ -245,18 +246,48 @@ export function startUiServer(): http.Server {
 
     if (pathname === "/api/statistics" && method === "GET") {
       try {
-        const state = await readState();
+        const stats = await readJobStatistics();
         const portfolios = await listPortfolios();
         const connectedCount = portfolios.filter((p) => p.hasCredentials).length;
         sendJson(res, 200, {
-          lastProcessedDate: state.lastProcessedDate,
-          lastProcessedTimestamp: state.lastProcessedTimestamp,
+          lastProcessedDate: stats.lastProcessedDate,
+          lastProcessedTimestamp: stats.lastProcessedTimestamp,
           portfolioCount: portfolios.length,
           connectedCount,
+          portfolioUrlEnvOverride: stats.portfolioUrlEnvOverride,
         });
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         sendJson(res, 500, { error: message });
+      }
+      return;
+    }
+
+    const strategyMatch = pathname.match(
+      /^\/api\/portfolios\/(\d+)\/systemtrader-strategy$/
+    );
+    if (strategyMatch && method === "PUT") {
+      try {
+        const portfolioId = parseInt(strategyMatch[1], 10);
+        if (Number.isNaN(portfolioId) || portfolioId <= 0) {
+          sendJson(res, 400, { error: "Invalid portfolio id" });
+          return;
+        }
+        const body = await parseBody(req);
+        const slug = typeof body.slug === "string" ? body.slug : "";
+        const portfolios = await listPortfolios();
+        if (!portfolios.some((p) => p.id === portfolioId)) {
+          sendJson(res, 404, { error: "Portfolio not found" });
+          return;
+        }
+        await updatePortfolioSystemTraderSlug(portfolioId, slug);
+        sendJson(res, 200, { ok: true });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        let status = 500;
+        if (message === "Portfolio not found") status = 404;
+        else if (message.includes("Invalid strategy slug")) status = 400;
+        sendJson(res, status, { error: message });
       }
       return;
     }

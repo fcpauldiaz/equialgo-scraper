@@ -65,7 +65,6 @@ export function scaleActionsToPortfolioSize(
   if (actions.length === 0) {
     return actions;
   }
-
   const buyActions = actions.filter((a) => a.action === "BUY");
   const numBuys = buyActions.length;
   const allocationPerPosition =

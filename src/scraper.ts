@@ -1,18 +1,15 @@
 import puppeteer, { type Browser, type Page } from "puppeteer";
 import { ScrapedPortfolioData, PortfolioAction } from "./types";
 
-const PORTFOLIO_URL =
-  process.env.PORTFOLIO_URL ||
-  "https://www.systemtrader.co/gemini/portfolio";
 const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || "3", 10);
 const RETRY_DELAY_MS = parseInt(process.env.RETRY_DELAY_MS || "1000", 10);
 const HEADLESS = process.env.PUPPETEER_HEADLESS !== "false";
 /** Use system Chrome/Chromium when set (e.g. in Docker: install chromium and set to /usr/bin/chromium). */
 const EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 
-function getSignInUrl(): string {
-  const base = new URL(PORTFOLIO_URL).origin;
-  const callbackPath = new URL(PORTFOLIO_URL).pathname;
+function getSignInUrl(portfolioUrl: string): string {
+  const base = new URL(portfolioUrl).origin;
+  const callbackPath = new URL(portfolioUrl).pathname;
   return `${base}/signin?callbackUrl=${encodeURIComponent(callbackPath)}`;
 }
 
@@ -78,8 +75,13 @@ function extractDate(page: Page): string {
 }
 
 /** Performs sign-in on the page so subsequent navigation to portfolio is authenticated. */
-async function signIn(page: Page, email: string, password: string): Promise<void> {
-  const signInUrl = getSignInUrl();
+async function signIn(
+  page: Page,
+  email: string,
+  password: string,
+  portfolioUrl: string
+): Promise<void> {
+  const signInUrl = getSignInUrl(portfolioUrl);
   console.log("Signing in before scrape...");
   await page.goto(signInUrl, { waitUntil: "networkidle2", timeout: 30000 });
   await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -120,7 +122,9 @@ async function signIn(page: Page, email: string, password: string): Promise<void
   await new Promise((resolve) => setTimeout(resolve, 1000));
 }
 
-export async function scrapePortfolioData(): Promise<ScrapedPortfolioData> {
+export async function scrapePortfolioData(
+  portfolioUrl: string
+): Promise<ScrapedPortfolioData> {
   const loginEmail = process.env.LOGIN_EMAIL || "";
   const loginPassword = process.env.LOGIN_PASSWORD || "";
   if (!loginEmail.trim() || !loginPassword) {
@@ -141,11 +145,11 @@ export async function scrapePortfolioData(): Promise<ScrapedPortfolioData> {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
       );
 
-      console.log(`Scraping portfolio data from ${PORTFOLIO_URL} (attempt ${attempt})...`);
+      console.log(`Scraping portfolio data from ${portfolioUrl} (attempt ${attempt})...`);
 
-      await signIn(page, loginEmail, loginPassword);
+      await signIn(page, loginEmail, loginPassword, portfolioUrl);
 
-      await page.goto(PORTFOLIO_URL, {
+      await page.goto(portfolioUrl, {
         waitUntil: "networkidle2",
         timeout: 30000,
       });

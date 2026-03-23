@@ -1,10 +1,10 @@
 # EquiAlgo Stock Alert Service
 
-A Node.js/TypeScript service that scrapes the SystemTrader Gemini Portfolio page for today's trading actions, automatically executes trades via Charles Schwab API, and sends daily notifications via ntfy for stock entry and exit signals.
+A Node.js/TypeScript service that scrapes a SystemTrader portfolio page (Gemini, Scorpio, and other strategies on the same site) for today's trading actions, automatically executes trades via Charles Schwab or Tradier, and sends daily notifications via ntfy for stock entry and exit signals.
 
 ## Features
 
-- Scrapes SystemTrader Gemini Portfolio page using Puppeteer to extract "Today's Actions" table
+- Scrapes SystemTrader portfolio pages using Puppeteer to extract "Today's Actions" table (each brokerage portfolio picks its own signal source in the admin UI, default Gemini)
 - Extracts ENTER and EXIT signals from the latest snapshot
 - Calculates share allocations for a $10,000 portfolio with equal distribution
 - Automatically places BUY orders for ENTER signals and SELL orders for EXIT signals via Charles Schwab API
@@ -54,7 +54,7 @@ Configuration is done via environment variables. Create a `.env` file in the pro
 | `NTFY_TOPIC` | `fcpauldiaz_notifications` | Ntfy topic for notifications |
 | `NTFY_BASE_URL` | `https://ntfy.sh` | Base URL for ntfy service |
 | `PORTFOLIO_SIZE` | `10000` | Portfolio size in dollars for share calculations (legacy, not used with scraper) |
-| `PORTFOLIO_URL` | `https://www.systemtrader.co/gemini/portfolio` | SystemTrader Gemini Portfolio page URL to scrape |
+| `PORTFOLIO_URL` | *(unset)* | When set, this URL is used for scraping and **overrides** the URL built from each portfolio’s strategy slug. When unset, the scrape URL is `https://www.systemtrader.co/{slug}/portfolio` where `{slug}` is stored **per brokerage portfolio** in the database (default `gemini`) and can be changed in the admin UI on each portfolio row. |
 | `LOGIN_EMAIL` | *Required* | Email for signing in to the portfolio site |
 | `LOGIN_PASSWORD` | *Required* | Password for signing in to the portfolio site |
 | `MAX_RETRIES` | `3` | Maximum number of retry attempts for scraping (page-level) |
@@ -92,8 +92,8 @@ NTFY_BASE_URL=https://ntfy.sh
 # Portfolio configuration
 PORTFOLIO_SIZE=10000
 
-# Scraper configuration
-PORTFOLIO_URL=https://www.systemtrader.co/gemini/portfolio
+# Scraper configuration (optional: omit PORTFOLIO_URL to use UI/database strategy → https://www.systemtrader.co/{slug}/portfolio)
+# PORTFOLIO_URL=https://www.systemtrader.co/gemini/portfolio
 LOGIN_EMAIL=your_email@example.com
 LOGIN_PASSWORD=your_password
 
@@ -195,13 +195,13 @@ pm2 startup
 
 ## How It Works
 
-1. **Scrape**: Uses Puppeteer to load the SystemTrader Gemini Portfolio page (configurable via `PORTFOLIO_URL`) and extracts the "Today's Actions" table
+1. **Scrape**: For each distinct strategy slug among connected portfolios, uses Puppeteer to load that SystemTrader page (`PORTFOLIO_URL` if set, otherwise `https://www.systemtrader.co/{slug}/portfolio`) and extracts the "Today's Actions" table
 2. **Parse**: Extracts Symbol, Action (BUY/SELL/INCREASE/DECREASE), Shares (from Change column), and Open Price from each row
 3. **Normalize**: Maps INCREASE → BUY and DECREASE → SELL, extracts absolute share counts from change values
-4. **Check State**: Verifies if the date has already been processed
+4. **Check State**: For each brokerage portfolio, verifies if that **calendar date and strategy slug** were already processed for that portfolio (switching strategy on the same day triggers another run for that account)
 5. **Execute Trades**: If trading is enabled, places BUY orders for BUY actions and SELL orders for SELL actions via Charles Schwab API using the exact shares and prices from the scraped data
 6. **Notify**: Sends a detailed notification via ntfy if it's a new date
-7. **Update State**: Records the processed date to prevent duplicates
+7. **Update State**: Records the processed date and slug **per brokerage portfolio** to prevent duplicates
 
 ## Schwab API Setup
 
@@ -230,11 +230,11 @@ When the service is running, an admin UI is available for adding portfolios and 
    ```
 
 5. **Open the admin UI** in your browser (default: `http://localhost:3000`).
-   - Add one or more portfolios (e.g. "Default", "IRA").
+   - Add one or more portfolios (e.g. "Default", "IRA"). For each portfolio, set **Signal source** (Gemini, Scorpio, etc.); that SystemTrader page drives trades for that account only.
    - For each portfolio, click **Login with Schwab**. A new window opens for Schwab sign-in; after you authorize, tokens and account number are saved for that portfolio.
    - Use **Verify** to confirm the connection.
 
-6. The daily cron runs one scrape and executes the same actions for **every portfolio that has credentials**. Optionally set `PORTFOLIO_IDS=1,2` to limit which portfolios are used.
+6. The daily cron runs **one scrape per distinct signal source** among connected portfolios, then executes that strategy’s actions for **each portfolio** that uses that source. Optionally set `PORTFOLIO_IDS=1,2` to limit which portfolios are used.
 
 ### Option B: CLI login script (single default portfolio)
 

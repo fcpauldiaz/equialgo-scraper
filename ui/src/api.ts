@@ -5,6 +5,10 @@ export interface PortfolioItem {
   name: string;
   hasCredentials: boolean;
   brokerage: PortfolioBrokerage;
+  systemtraderSlug: string;
+  lastProcessedDate: string | null;
+  lastProcessedTimestamp: number | null;
+  lastProcessedSystemtraderSlug: string | null;
 }
 
 export async function fetchPortfolios(): Promise<PortfolioItem[]> {
@@ -52,7 +56,7 @@ export async function connectTradier(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ portfolioId, apiKey, sandbox }),
   });
-  const data = await r.json().catch(() => ({})) as { ok?: boolean; error?: string };
+  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
   if (!r.ok) {
     throw new Error(data.error || r.statusText);
   }
@@ -76,12 +80,40 @@ export interface Statistics {
   lastProcessedTimestamp: number | null;
   portfolioCount: number;
   connectedCount: number;
+  portfolioUrlEnvOverride: boolean;
 }
+
+export const SYSTEMTRADER_STRATEGY_SLUGS = [
+  "gemini",
+  "scorpio",
+  "vega",
+  "mars",
+  "jupiter",
+  "mercury",
+  "saturn",
+  "taurus",
+] as const;
 
 export async function fetchStatistics(): Promise<Statistics> {
   const r = await fetch("/api/statistics");
   if (!r.ok) throw new Error(r.statusText);
   return r.json();
+}
+
+export async function updatePortfolioSystemTraderStrategy(
+  portfolioId: number,
+  slug: string
+): Promise<{ ok: boolean }> {
+  const r = await fetch(`/api/portfolios/${portfolioId}/systemtrader-strategy`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ slug }),
+  });
+  const data = (await r.json().catch(() => ({}))) as { error?: string };
+  if (!r.ok) {
+    throw new Error(data.error || r.statusText);
+  }
+  return { ok: true };
 }
 
 export interface PortfolioPosition {
