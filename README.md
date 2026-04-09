@@ -11,7 +11,7 @@ A Node.js/TypeScript service that scrapes a SystemTrader portfolio page (Gemini,
 - Verifies existing positions before placing orders to avoid duplicates
 - Sends detailed notifications via ntfy
 - Tracks processed dates to avoid duplicate notifications
-- Runs continuously with scheduled daily execution using node-cron
+- Long-running **UI** process; the **daily check** (scrape, trade, notify) is run on a schedule you define outside the app (e.g. [Coolify](https://coolify.io) scheduled tasks) via `pnpm run daily-check`
 
 ## Prerequisites
 
@@ -49,8 +49,6 @@ Configuration is done via environment variables. Create a `.env` file in the pro
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CRON_SCHEDULE` | `0 9 * * *` | Cron schedule for daily execution (9:00 AM daily) |
-| `CRON_TIMEZONE` | *(system)* | Timezone for cron (e.g. `America/New_York`, `Europe/London`). Schedule is evaluated in this timezone. |
 | `NTFY_TOPIC` | `fcpauldiaz_notifications` | Ntfy topic for notifications |
 | `NTFY_BASE_URL` | `https://ntfy.sh` | Base URL for ntfy service |
 | `PORTFOLIO_SIZE` | `10000` | Portfolio size in dollars for share calculations (legacy, not used with scraper) |
@@ -82,9 +80,6 @@ Configuration is done via environment variables. Create a `.env` file in the pro
 Create a `.env` file in the project root:
 
 ```bash
-# Cron schedule (default: "0 9 * * *" - 9:00 AM daily)
-CRON_SCHEDULE=0 9 * * *
-
 # Ntfy configuration
 NTFY_TOPIC=fcpauldiaz_notifications
 NTFY_BASE_URL=https://ntfy.sh
@@ -114,16 +109,16 @@ SCHWAB_ORDER_TYPE=MARKET
 SCHWAB_ENABLE_TRADING=false
 ```
 
-### Cron Schedule Examples
+### Scheduling the daily check (Coolify or any cron)
+
+The app no longer runs an internal timer. After `pnpm run build`, run the check with the **same environment** as the UI service:
 
 ```bash
-export CRON_SCHEDULE="0 9 * * *"   # 9:00 AM daily (default)
-export CRON_SCHEDULE="0 8 * * *"   # 8:00 AM daily
-export CRON_SCHEDULE="0 10 * * 1-5"  # 10:00 AM on weekdays only
-export CRON_TIMEZONE="America/New_York"   # Run at 9 AM Eastern
+node dist/scripts/daily-check.js
+# or: pnpm run daily-check
 ```
 
-Cron format: `minute hour day month day-of-week`. Use `CRON_TIMEZONE` so the schedule is evaluated in that timezone (IANA name, e.g. `America/New_York`, `UTC`).
+In **Coolify**, add a **Scheduled Task** with that command (or equivalent), using the same resource/container image and env vars as your deployment. Set the schedule in Coolify (e.g. `30 8 * * 1-5` with timezone `America/New_York` for 8:30 AM Eastern on weekdays).
 
 ## Usage
 
@@ -147,9 +142,10 @@ pnpm start
 ```
 
 The service will:
-- Run an initial check immediately
-- Schedule daily checks based on the cron schedule
-- Continue running until stopped (Ctrl+C)
+- Start the admin UI and API (no automatic scrape/trade)
+- Keep running until stopped (Ctrl+C)
+
+Run scraping and trades on a schedule using `pnpm run daily-check` (see above).
 
 ### Running in Docker or on a server (no bundled Chrome)
 
@@ -234,7 +230,7 @@ When the service is running, an admin UI is available for adding portfolios and 
    - For each portfolio, click **Login with Schwab**. A new window opens for Schwab sign-in; after you authorize, tokens and account number are saved for that portfolio.
    - Use **Verify** to confirm the connection.
 
-6. The daily cron runs **one scrape per distinct signal source** among connected portfolios, then executes that strategy’s actions for **each portfolio** that uses that source. Optionally set `PORTFOLIO_IDS=1,2` to limit which portfolios are used.
+6. Each scheduled `daily-check` run performs **one scrape per distinct signal source** among connected portfolios, then executes that strategy’s actions for **each portfolio** that uses that source. Optionally set `PORTFOLIO_IDS=1,2` to limit which portfolios are used.
 
 ### Option B: CLI login script (single default portfolio)
 
@@ -318,7 +314,7 @@ The database is automatically initialized on first run, creating a `state` table
 
 ## Error Handling
 
-- Network errors: Logged and retried on the next scheduled run (up to 3 retries)
+- Network errors: Logged and retried within the same `daily-check` invocation (see `SCRAPE_JOB_RETRY_*`)
 - Invalid JSON: Logged and processing skipped
 - Missing snapshot data: Warning logged and processing skipped
 - Ntfy failures: Error logged but doesn't block state update
@@ -328,7 +324,10 @@ The database is automatically initialized on first run, creating a `state` table
 ```
 equialgo-alerts/
 ├── src/
-│   ├── index.ts          # Main service entry point
+│   ├── index.ts          # Main service entry (UI only)
+│   ├── run-check.ts      # Daily scrape + trade + notify
+│   ├── scripts/
+│   │   └── daily-check.ts  # CLI entry for scheduled runs
 │   ├── scraper.ts        # Puppeteer-based portfolio page scraping
 │   ├── fetcher.ts        # Legacy API fetching logic (deprecated)
 │   ├── processor.ts      # Signal extraction and action-to-signal conversion
@@ -347,7 +346,6 @@ equialgo-alerts/
 
 - `typescript` - TypeScript compiler
 - `puppeteer` - Headless browser for web scraping
-- `node-cron` - Daily scheduling
 - `@libsql/client` - Turso/LibSQL database client
 - `@sudowealth/schwab-api` - Charles Schwab API client with OAuth support
 - `dotenv` - Environment variable management

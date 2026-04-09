@@ -13,6 +13,16 @@ const DEFAULT_REDIRECT_URI = `https://${HOST}:${REDIRECT_PORT}${REDIRECT_PATH}`;
 let loginInProgress = false;
 let pendingResolveFlowComplete: (() => void) | null = null;
 let pendingPortfolioId: number | null = null;
+let localCallbackServer: https.Server | null = null;
+
+function closeExistingLocalCallbackServer(): Promise<void> {
+  const s = localCallbackServer;
+  if (!s) return Promise.resolve();
+  localCallbackServer = null;
+  return new Promise((resolve) => {
+    s.close(() => resolve());
+  });
+}
 
 export function isSchwabLoginInProgress(): boolean {
   return loginInProgress;
@@ -31,6 +41,8 @@ export async function startSchwabLoginFlow(
     pendingResolveFlowComplete = null;
     loginInProgress = false;
   }
+
+  await closeExistingLocalCallbackServer();
 
   const clientId = process.env.SCHWAB_CLIENT_ID;
   const clientSecret = process.env.SCHWAB_CLIENT_SECRET;
@@ -229,9 +241,14 @@ export async function startSchwabLoginFlow(
     } finally {
       loginInProgress = false;
       resolveFlowComplete();
+      if (localCallbackServer === server) {
+        localCallbackServer = null;
+      }
       server.close();
     }
   });
+
+  localCallbackServer = server;
 
   return new Promise((resolve, reject) => {
     server.listen(REDIRECT_PORT, HOST, () => {
@@ -240,6 +257,9 @@ export async function startSchwabLoginFlow(
     });
     server.on("error", (err) => {
       console.warn("[Schwab OAuth] Local callback server error", (err as Error).message);
+      if (localCallbackServer === server) {
+        localCallbackServer = null;
+      }
       loginInProgress = false;
       reject(err);
     });
