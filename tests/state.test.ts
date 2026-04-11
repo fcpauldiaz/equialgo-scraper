@@ -1,54 +1,15 @@
-import { shouldProcess, type PortfolioScrapeState } from "../src/state";
-
-function baseScrapeState(overrides: Partial<PortfolioScrapeState> = {}): PortfolioScrapeState {
-  return {
-    lastProcessedDate: null,
-    lastProcessedSystemtraderSlug: null,
-    ...overrides,
-  };
-}
+import { shouldProcess } from "../src/state";
 
 describe("shouldProcess", () => {
-  it("returns true when no prior date", () => {
-    expect(shouldProcess("2025-03-22", baseScrapeState(), "gemini")).toBe(true);
+  it("returns true when no prior date for this slug", () => {
+    expect(shouldProcess("2025-03-22", null)).toBe(true);
   });
 
   it("returns true when date changed", () => {
-    expect(
-      shouldProcess(
-        "2025-03-23",
-        baseScrapeState({
-          lastProcessedDate: "2025-03-22",
-          lastProcessedSystemtraderSlug: "gemini",
-        }),
-        "gemini"
-      )
-    ).toBe(true);
+    expect(shouldProcess("2025-03-23", "2025-03-22")).toBe(true);
   });
 
-  it("returns false when same date and same slug", () => {
-    expect(
-      shouldProcess(
-        "2025-03-22",
-        baseScrapeState({
-          lastProcessedDate: "2025-03-22",
-          lastProcessedSystemtraderSlug: "gemini",
-        }),
-        "gemini"
-      )
-    ).toBe(false);
-  });
-
-  it("returns true when same date but strategy slug changed", () => {
-    expect(
-      shouldProcess(
-        "2025-03-22",
-        baseScrapeState({
-          lastProcessedDate: "2025-03-22",
-          lastProcessedSystemtraderSlug: "gemini",
-        }),
-        "scorpio"
-      )
-    ).toBe(true);
+  it("returns false when same date already processed for this slug", () => {
+    expect(shouldProcess("2025-03-22", "2025-03-22")).toBe(false);
   });
 });

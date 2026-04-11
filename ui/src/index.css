@@ -21,15 +21,95 @@ ul {
 
 .portfolio-row {
   display: flex;
-  align-items: center;
-  gap: 0.75rem;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
   padding: 0.5rem 0;
   border-bottom: 1px solid #eee;
 }
 
-.portfolio-name {
+.portfolio-row-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem 0.75rem;
+}
+
+.portfolio-row-main {
+  display: flex;
+  align-items: baseline;
+  gap: 0.65rem;
   flex: 1;
+  min-width: 0;
+}
+
+.portfolio-name {
   font-weight: 500;
+  min-width: 0;
+}
+
+.strategy-signals {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.15rem 0.35rem;
+  font-size: 0.8125rem;
+  line-height: 1.2;
+}
+
+.strategy-signals-caption {
+  grid-column: 1 / -1;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #555;
+  margin: 0;
+  padding: 0;
+}
+
+.strategy-signals label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.strategy-signals label input[type="checkbox"] {
+  margin: 0;
+  flex-shrink: 0;
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.strategy-signals-disabled label {
+  cursor: default;
+  opacity: 0.75;
+}
+
+.portfolio-last-run {
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: #555;
+}
+
+.portfolio-last-run-item:not(:first-child)::before {
+  content: " · ";
+  color: #bbb;
+}
+
+.portfolio-last-run-detail {
+  margin-top: 0.35rem;
+}
+
+.portfolio-detail-meta {
+  margin-bottom: 1rem;
+}
+
+@media (max-width: 380px) {
+  .strategy-signals {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .status {
@@ -48,7 +128,9 @@ ul {
 .portfolio-actions {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.5rem;
+  justify-content: flex-end;
 }
 
 .portfolio-actions button {

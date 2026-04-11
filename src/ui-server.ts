@@ -6,7 +6,7 @@ import {
   createPortfolio,
   readJobStatistics,
   writeTradierCredentials,
-  updatePortfolioSystemTraderSlug,
+  setPortfolioSystemTraderStrategies,
 } from "./state";
 import { startSchwabLoginFlow, handleSchwabCallback } from "./schwab-oauth";
 import { getTradierAccountId } from "./tradier-client";
@@ -274,19 +274,36 @@ export function startUiServer(): http.Server {
           return;
         }
         const body = await parseBody(req);
-        const slug = typeof body.slug === "string" ? body.slug : "";
+        const raw = body.slugs;
+        if (!Array.isArray(raw)) {
+          sendJson(res, 400, { error: "slugs must be a non-empty array" });
+          return;
+        }
+        const slugs = raw
+          .map((x) => (typeof x === "string" ? x.trim() : ""))
+          .filter((s) => s.length > 0);
+        if (slugs.length === 0) {
+          sendJson(res, 400, { error: "slugs must be a non-empty array" });
+          return;
+        }
         const portfolios = await listPortfolios();
         if (!portfolios.some((p) => p.id === portfolioId)) {
           sendJson(res, 404, { error: "Portfolio not found" });
           return;
         }
-        await updatePortfolioSystemTraderSlug(portfolioId, slug);
+        await setPortfolioSystemTraderStrategies(portfolioId, slugs);
         sendJson(res, 200, { ok: true });
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         let status = 500;
         if (message === "Portfolio not found") status = 404;
-        else if (message.includes("Invalid strategy slug")) status = 400;
+        else if (
+          message.includes("Invalid strategy slug") ||
+          message.includes("Unknown strategy slug") ||
+          message.includes("At least one strategy")
+        ) {
+          status = 400;
+        }
         sendJson(res, status, { error: message });
       }
       return;

@@ -75,15 +75,12 @@ export async function runCheck(): Promise<void> {
       let anyProcessedForSlug = false;
 
       for (const portfolioId of portfolioIds) {
-        const target = targets.find((x) => x.id === portfolioId);
+        const target = targets.find(
+          (x) => x.id === portfolioId && x.systemtraderSlug === slug
+        );
         if (!target) continue;
 
-        const scrapeState = {
-          lastProcessedDate: target.lastProcessedDate,
-          lastProcessedSystemtraderSlug: target.lastProcessedSystemtraderSlug,
-        };
-
-        if (!shouldProcess(scrapedData.date, scrapeState, slug)) {
+        if (!shouldProcess(scrapedData.date, target.lastProcessedDate)) {
           console.log(
             `Portfolio ${portfolioId}: already processed ${scrapedData.date} for "${slug}", skipping`
           );
@@ -101,7 +98,6 @@ export async function runCheck(): Promise<void> {
         await writePortfolioProcessedState(portfolioId, scrapedData.date, timestamp, slug);
         target.lastProcessedDate = scrapedData.date;
         target.lastProcessedTimestamp = timestamp;
-        target.lastProcessedSystemtraderSlug = slug;
 
         anyProcessedForSlug = true;
       }

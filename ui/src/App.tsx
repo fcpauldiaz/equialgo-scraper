@@ -8,7 +8,7 @@ import {
   verifyPortfolio,
   fetchStatistics,
   fetchPortfolioPositions,
-  updatePortfolioSystemTraderStrategy,
+  updatePortfolioSystemTraderStrategies,
   SYSTEMTRADER_STRATEGY_SLUGS,
   type PortfolioItem,
 } from "./api";
@@ -94,11 +94,11 @@ function usePortfolioStrategyMutation() {
   return useMutation({
     mutationFn: ({
       portfolioId,
-      slug,
+      slugs,
     }: {
       portfolioId: number;
-      slug: string;
-    }) => updatePortfolioSystemTraderStrategy(portfolioId, slug),
+      slugs: string[];
+    }) => updatePortfolioSystemTraderStrategies(portfolioId, slugs),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: PORTFOLIOS_QUERY_KEY });
       queryClient.invalidateQueries({ queryKey: STATISTICS_QUERY_KEY });
@@ -137,6 +137,52 @@ function Nav({ route }: { route: Route }) {
   );
 }
 
+function StrategySignalCheckboxes({
+  portfolioId,
+  systemtraderSlugs,
+  disabled,
+  onSlugsChange,
+}: {
+  portfolioId: number;
+  systemtraderSlugs: string[];
+  disabled: boolean;
+  onSlugsChange: (portfolioId: number, slugs: string[]) => void;
+}) {
+  const toggle = (slug: string, checked: boolean) => {
+    const set = new Set(systemtraderSlugs);
+    if (checked) {
+      set.add(slug);
+    } else {
+      set.delete(slug);
+    }
+    const next = Array.from(set);
+    if (next.length === 0) {
+      return;
+    }
+    onSlugsChange(portfolioId, next);
+  };
+
+  return (
+    <div
+      className={`strategy-signals${disabled ? " strategy-signals-disabled" : ""}`}
+      aria-label="SystemTrader strategies"
+    >
+      <p className="strategy-signals-caption">Strategies</p>
+      {SYSTEMTRADER_STRATEGY_SLUGS.map((slug) => (
+        <label key={slug}>
+          <input
+            type="checkbox"
+            checked={systemtraderSlugs.includes(slug)}
+            disabled={disabled}
+            onChange={(e) => toggle(slug, e.target.checked)}
+          />
+          <span>{slug.charAt(0).toUpperCase() + slug.slice(1)}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function PortfolioRow({
   portfolio,
   loginInProgress,
@@ -145,7 +191,7 @@ function PortfolioRow({
   onShowTradierForm,
   onCloseTradierForm,
   showPositionsLink,
-  onStrategyChange,
+  onSlugsChange,
   strategyUpdatePending,
 }: {
   portfolio: PortfolioItem;
@@ -155,7 +201,7 @@ function PortfolioRow({
   onShowTradierForm: () => void;
   onCloseTradierForm: () => void;
   showPositionsLink?: boolean;
-  onStrategyChange: (portfolioId: number, slug: string) => void;
+  onSlugsChange: (portfolioId: number, slugs: string[]) => void;
   strategyUpdatePending: boolean;
 }) {
   const verifyMutation = useVerifyPortfolio();
@@ -197,80 +243,75 @@ function PortfolioRow({
 
   return (
     <li className="portfolio-row">
-      <div className="portfolio-row-main">
-        <span className="portfolio-name">{portfolio.name}</span>
-        <span className={`status ${portfolio.hasCredentials ? "connected" : "disconnected"}`}>
-          {statusLabel}
-        </span>
-      </div>
-      <div style={{ marginTop: "0.35rem", marginBottom: "0.25rem" }}>
-        <label style={{ fontSize: "0.9rem" }}>
-          Signal source{" "}
-          <select
-            value={portfolio.systemtraderSlug}
-            disabled={strategyUpdatePending}
-            onChange={(e) => onStrategyChange(portfolio.id, e.target.value)}
-          >
-            {SYSTEMTRADER_STRATEGY_SLUGS.map((slug) => (
-              <option key={slug} value={slug}>
-                {slug.charAt(0).toUpperCase() + slug.slice(1)}
-              </option>
-            ))}
-          </select>
-        </label>
-        {portfolio.lastProcessedDate != null && (
-          <span style={{ fontSize: "0.8rem", marginLeft: "0.75rem", color: "#555" }}>
-            Last run: {portfolio.lastProcessedDate}
-            {portfolio.lastProcessedSystemtraderSlug != null &&
-              ` (${portfolio.lastProcessedSystemtraderSlug})`}
+      <div className="portfolio-row-header">
+        <div className="portfolio-row-main">
+          <span className="portfolio-name">{portfolio.name}</span>
+          <span className={`status ${portfolio.hasCredentials ? "connected" : "disconnected"}`}>
+            {statusLabel}
           </span>
-        )}
-      </div>
-      <div className="portfolio-actions">
-        {showPositionsLink && portfolio.hasCredentials && (
-          <a href={`#/portfolios/${portfolio.id}`}>Positions</a>
-        )}
-        {portfolio.hasCredentials && portfolio.brokerage === "schwab" && (
-          <button
-            type="button"
-            onClick={() => onLogin(portfolio.id)}
-            disabled={loginInProgress}
-          >
-            Re-authorize Schwab
-          </button>
-        )}
-        {!portfolio.hasCredentials && (
-          <>
+        </div>
+        <div className="portfolio-actions">
+          {showPositionsLink && portfolio.hasCredentials && (
+            <a href={`#/portfolios/${portfolio.id}`}>Positions</a>
+          )}
+          {portfolio.hasCredentials && portfolio.brokerage === "schwab" && (
             <button
               type="button"
               onClick={() => onLogin(portfolio.id)}
               disabled={loginInProgress}
             >
-              Login with Schwab
+              Re-authorize Schwab
             </button>
-            <button type="button" onClick={onShowTradierForm} disabled={showTradierForm}>
-              Connect Tradier
-            </button>
-          </>
-        )}
-        <button
-          type="button"
-          onClick={handleVerify}
-          disabled={verifyMutation.isPending}
-        >
-          Verify
-        </button>
-        {verifyMsg !== null && (
-          <span className="verify-msg">
-            {verifyMsg}
-            {verifyMsg !== "OK" &&
-              portfolio.hasCredentials &&
-              portfolio.brokerage === "schwab" && (
-                <> — Use <strong>Re-authorize Schwab</strong> above to refresh your token.</>
-              )}
-          </span>
-        )}
+          )}
+          {!portfolio.hasCredentials && (
+            <>
+              <button
+                type="button"
+                onClick={() => onLogin(portfolio.id)}
+                disabled={loginInProgress}
+              >
+                Login with Schwab
+              </button>
+              <button type="button" onClick={onShowTradierForm} disabled={showTradierForm}>
+                Connect Tradier
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={handleVerify}
+            disabled={verifyMutation.isPending}
+          >
+            Verify
+          </button>
+          {verifyMsg !== null && (
+            <span className="verify-msg">
+              {verifyMsg}
+              {verifyMsg !== "OK" &&
+                portfolio.hasCredentials &&
+                portfolio.brokerage === "schwab" && (
+                  <> — Use <strong>Re-authorize Schwab</strong> above to refresh your token.</>
+                )}
+            </span>
+          )}
+        </div>
       </div>
+      <StrategySignalCheckboxes
+        portfolioId={portfolio.id}
+        systemtraderSlugs={portfolio.systemtraderSlugs}
+        disabled={strategyUpdatePending}
+        onSlugsChange={onSlugsChange}
+      />
+      {portfolio.strategyRuns.length > 0 && (
+        <div className="portfolio-last-run">
+          Last run:{" "}
+          {portfolio.strategyRuns.map((r) => (
+            <span key={r.slug} className="portfolio-last-run-item">
+              {r.slug}: {r.lastProcessedDate ?? "—"}
+            </span>
+          ))}
+        </div>
+      )}
       {showTradierForm && (
         <form
           className="tradier-connect-form"
@@ -348,8 +389,8 @@ function DashboardView({
       <section className="dashboard-portfolios">
         <h2>Portfolios</h2>
         <p style={{ fontSize: "0.9rem", color: "#555", marginBottom: "0.75rem" }}>
-          Each portfolio has its own SystemTrader signal source. Trades use the strategy selected for that
-          portfolio.
+          Each portfolio can follow one or more SystemTrader strategies on the same brokerage connection.
+          Trades run for each selected strategy when the job runs.
         </p>
         {portfolioUrlEnvOverride && (
           <p className="error-msg" style={{ marginTop: 0 }}>
@@ -369,7 +410,9 @@ function DashboardView({
               onShowTradierForm={() => {}}
               onCloseTradierForm={() => {}}
               showPositionsLink
-              onStrategyChange={(id, slug) => strategyMutation.mutate({ portfolioId: id, slug })}
+              onSlugsChange={(id, slugs) =>
+                strategyMutation.mutate({ portfolioId: id, slugs })
+              }
               strategyUpdatePending={strategyMutation.isPending}
             />
           ))}
@@ -404,26 +447,28 @@ function PortfolioDetailView({
       </p>
       <h1>{portfolio ? portfolio.name : `Portfolio ${portfolioId}`}</h1>
       {portfolio && (
-        <div style={{ marginBottom: "1rem" }}>
-          <label style={{ fontSize: "0.95rem" }}>
-            Signal source{" "}
-            <select
-              value={portfolio.systemtraderSlug}
-              disabled={strategyMutation.isPending}
-              onChange={(e) =>
-                strategyMutation.mutate({ portfolioId: portfolio.id, slug: e.target.value })
-              }
-            >
-              {SYSTEMTRADER_STRATEGY_SLUGS.map((slug) => (
-                <option key={slug} value={slug}>
-                  {slug.charAt(0).toUpperCase() + slug.slice(1)}
-                </option>
+        <div className="portfolio-detail-meta">
+          <StrategySignalCheckboxes
+            portfolioId={portfolio.id}
+            systemtraderSlugs={portfolio.systemtraderSlugs}
+            disabled={strategyMutation.isPending}
+            onSlugsChange={(id, slugs) =>
+              strategyMutation.mutate({ portfolioId: id, slugs })
+            }
+          />
+          {portfolio.strategyRuns.length > 0 && (
+            <div className="portfolio-last-run portfolio-last-run-detail">
+              Last run:{" "}
+              {portfolio.strategyRuns.map((r) => (
+                <span key={r.slug} className="portfolio-last-run-item">
+                  {r.slug}: {r.lastProcessedDate ?? "—"}
+                </span>
               ))}
-            </select>
-          </label>
+            </div>
+          )}
           {portfolioUrlEnvOverride && (
             <p className="error-msg" style={{ fontSize: "0.85rem", marginTop: "0.5rem" }}>
-              <code>PORTFOLIO_URL</code> overrides scrape URLs for all strategies.
+              <code>PORTFOLIO_URL</code> overrides scrape URLs for all strategies until unset.
             </p>
           )}
           {strategyMutation.isError && (
@@ -515,7 +560,10 @@ function PortfoliosView({
   return (
     <>
       <h1>Portfolios</h1>
-      <p>Add portfolios and link each to Schwab (OAuth) or Tradier (API key). Set the SystemTrader signal source per portfolio.</p>
+      <p>
+        Add portfolios and link each to Schwab (OAuth) or Tradier (API key). Choose one or more
+        SystemTrader signal sources per portfolio.
+      </p>
       {portfolioUrlEnvOverride && (
         <p className="error-msg">
           <code>PORTFOLIO_URL</code> is set; all strategies use that URL until you unset it.
@@ -535,7 +583,9 @@ function PortfoliosView({
             showTradierForm={showTradierFormForId === p.id}
             onShowTradierForm={() => setShowTradierFormForId(p.id)}
             onCloseTradierForm={() => setShowTradierFormForId(null)}
-            onStrategyChange={(id, slug) => strategyMutation.mutate({ portfolioId: id, slug })}
+            onSlugsChange={(id, slugs) =>
+              strategyMutation.mutate({ portfolioId: id, slugs })
+            }
             strategyUpdatePending={strategyMutation.isPending}
           />
         ))}

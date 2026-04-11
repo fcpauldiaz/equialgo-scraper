@@ -2,11 +2,28 @@ import { createClient } from "@libsql/client";
 
 export const DEFAULT_SYSTEMTRADER_SLUG = "gemini";
 
+export const SYSTEMTRADER_STRATEGY_SLUGS = [
+  "gemini",
+  "scorpio",
+  "vega",
+  "mars",
+  "jupiter",
+  "mercury",
+  "saturn",
+  "taurus",
+] as const;
+
+export type SystemTraderStrategySlug =
+  (typeof SYSTEMTRADER_STRATEGY_SLUGS)[number];
+
 const SYSTEMTRADER_SLUG_PATTERN = /^[a-z0-9-]+$/;
 
-export interface PortfolioScrapeState {
+const ALLOWED_SLUG_SET = new Set<string>(SYSTEMTRADER_STRATEGY_SLUGS);
+
+export interface PortfolioStrategyRun {
+  slug: string;
   lastProcessedDate: string | null;
-  lastProcessedSystemtraderSlug: string | null;
+  lastProcessedTimestamp: number | null;
 }
 
 export interface JobStatisticsSnapshot {
@@ -20,7 +37,6 @@ export interface TradingPortfolioTarget {
   systemtraderSlug: string;
   lastProcessedDate: string | null;
   lastProcessedTimestamp: number | null;
-  lastProcessedSystemtraderSlug: string | null;
 }
 
 export function resolveSystemTraderPortfolioUrl(slug: string): string {
@@ -87,10 +103,8 @@ export interface PortfolioListItem {
   name: string;
   hasCredentials: boolean;
   brokerage: PortfolioBrokerage;
-  systemtraderSlug: string;
-  lastProcessedDate: string | null;
-  lastProcessedTimestamp: number | null;
-  lastProcessedSystemtraderSlug: string | null;
+  systemtraderSlugs: string[];
+  strategyRuns: PortfolioStrategyRun[];
 }
 
 async function getStateColumnNames(db: ReturnType<typeof getClient>): Promise<Set<string>> {
@@ -187,6 +201,52 @@ async function copyLegacyGlobalScrapeStateIntoPortfolios(
   );
 }
 
+async function migratePortfolioSystemtraderStrategiesTable(
+  db: ReturnType<typeof getClient>
+): Promise<void> {
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS portfolio_systemtrader_strategies (
+      portfolio_id INTEGER NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+      slug TEXT NOT NULL,
+      last_processed_date TEXT,
+      last_processed_timestamp INTEGER,
+      PRIMARY KEY (portfolio_id, slug)
+    )
+  `);
+
+  const countRes = await db.execute(
+    "SELECT COUNT(*) as c FROM portfolio_systemtrader_strategies"
+  );
+  const rowCount = Number(
+    (countRes.rows[0] as unknown as { c: number }).c
+  );
+  if (rowCount === 0) {
+    await db.execute(
+      `
+      INSERT INTO portfolio_systemtrader_strategies (portfolio_id, slug, last_processed_date, last_processed_timestamp)
+      SELECT id,
+             COALESCE(NULLIF(TRIM(systemtrader_slug), ''), ?),
+             last_processed_date,
+             last_processed_timestamp
+      FROM portfolios
+    `,
+      [DEFAULT_SYSTEMTRADER_SLUG]
+    );
+  }
+
+  await db.execute(
+    `
+    INSERT INTO portfolio_systemtrader_strategies (portfolio_id, slug, last_processed_date, last_processed_timestamp)
+    SELECT p.id, ?, NULL, NULL
+    FROM portfolios p
+    WHERE NOT EXISTS (
+      SELECT 1 FROM portfolio_systemtrader_strategies s WHERE s.portfolio_id = p.id
+    )
+  `,
+    [DEFAULT_SYSTEMTRADER_SLUG]
+  );
+}
+
 async function hasOldCredentialsSchema(db: ReturnType<typeof getClient>): Promise<boolean> {
   try {
     const result = await db.execute(
@@ -277,6 +337,8 @@ export async function initializeDatabase(): Promise<void> {
       )
     `);
 
+    await migratePortfolioSystemtraderStrategiesTable(db);
+
     console.log("Database initialized successfully");
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -289,7 +351,8 @@ export async function readJobStatistics(): Promise<JobStatisticsSnapshot> {
   const db = getClient();
   try {
     const result = await db.execute(
-      `SELECT last_processed_date, last_processed_timestamp FROM portfolios
+      `SELECT last_processed_date, last_processed_timestamp
+       FROM portfolio_systemtrader_strategies
        WHERE last_processed_timestamp IS NOT NULL
        ORDER BY last_processed_timestamp DESC
        LIMIT 1`
@@ -321,21 +384,35 @@ export async function writePortfolioProcessedState(
   processedSlug: string
 ): Promise<void> {
   const db = getClient();
+  const normalized = parseAndNormalizeSystemTraderSlug(processedSlug);
   await db.execute(
-    `UPDATE portfolios SET
+    `UPDATE portfolio_systemtrader_strategies SET
        last_processed_date = ?,
-       last_processed_timestamp = ?,
-       last_processed_systemtrader_slug = ?
-     WHERE id = ?`,
-    [date, timestamp, processedSlug, portfolioId]
+       last_processed_timestamp = ?
+     WHERE portfolio_id = ? AND slug = ?`,
+    [date, timestamp, portfolioId, normalized]
   );
 }
 
-export async function updatePortfolioSystemTraderSlug(
+function dedupeSlugsStable(slugs: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of slugs) {
+    const s = parseAndNormalizeSystemTraderSlug(raw);
+    if (seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
+export async function setPortfolioSystemTraderStrategies(
   portfolioId: number,
-  slug: string
+  slugs: string[]
 ): Promise<void> {
-  const normalized = parseAndNormalizeSystemTraderSlug(slug);
+  if (slugs.length === 0) {
+    throw new Error("At least one strategy slug is required");
+  }
   const db = getClient();
   const check = await db.execute("SELECT id FROM portfolios WHERE id = ?", [
     portfolioId,
@@ -343,27 +420,51 @@ export async function updatePortfolioSystemTraderSlug(
   if (check.rows.length === 0) {
     throw new Error("Portfolio not found");
   }
-  await db.execute("UPDATE portfolios SET systemtrader_slug = ? WHERE id = ?", [
-    normalized,
-    portfolioId,
-  ]);
+
+  const normalized = dedupeSlugsStable(slugs);
+  for (const s of normalized) {
+    if (!ALLOWED_SLUG_SET.has(s)) {
+      throw new Error(`Unknown strategy slug: ${s}`);
+    }
+  }
+
+  const currentRes = await db.execute(
+    "SELECT slug FROM portfolio_systemtrader_strategies WHERE portfolio_id = ?",
+    [portfolioId]
+  );
+  const current = new Set(
+    (currentRes.rows as unknown as { slug: string }[]).map((r) => r.slug)
+  );
+  const next = new Set(normalized);
+
+  for (const s of current) {
+    if (!next.has(s)) {
+      await db.execute(
+        "DELETE FROM portfolio_systemtrader_strategies WHERE portfolio_id = ? AND slug = ?",
+        [portfolioId, s]
+      );
+    }
+  }
+
+  for (const s of normalized) {
+    if (!current.has(s)) {
+      await db.execute(
+        `INSERT INTO portfolio_systemtrader_strategies (portfolio_id, slug, last_processed_date, last_processed_timestamp)
+         VALUES (?, ?, NULL, NULL)`,
+        [portfolioId, s]
+      );
+    }
+  }
 }
 
 export function shouldProcess(
   date: string,
-  scrapeState: PortfolioScrapeState,
-  currentSlug: string
+  lastProcessedDateForSlug: string | null
 ): boolean {
-  if (!scrapeState.lastProcessedDate) {
+  if (!lastProcessedDateForSlug) {
     return true;
   }
-  if (scrapeState.lastProcessedDate !== date) {
-    return true;
-  }
-  if (scrapeState.lastProcessedSystemtraderSlug !== currentSlug) {
-    return true;
-  }
-  return false;
+  return lastProcessedDateForSlug !== date;
 }
 
 export async function listTradingPortfolioTargets(): Promise<
@@ -372,16 +473,15 @@ export async function listTradingPortfolioTargets(): Promise<
   const db = getClient();
   try {
     const result = await db.execute(
-      `SELECT p.id,
-              COALESCE(NULLIF(TRIM(p.systemtrader_slug), ''), ?) AS systemtrader_slug,
-              p.last_processed_date,
-              p.last_processed_timestamp,
-              p.last_processed_systemtrader_slug
+      `SELECT p.id AS id,
+              s.slug AS systemtrader_slug,
+              s.last_processed_date,
+              s.last_processed_timestamp
        FROM portfolios p
-       WHERE EXISTS (SELECT 1 FROM schwab_credentials s WHERE s.portfolio_id = p.id)
+       INNER JOIN portfolio_systemtrader_strategies s ON s.portfolio_id = p.id
+       WHERE EXISTS (SELECT 1 FROM schwab_credentials sc WHERE sc.portfolio_id = p.id)
           OR EXISTS (SELECT 1 FROM tradier_credentials t WHERE t.portfolio_id = p.id)
-       ORDER BY p.id`,
-      [DEFAULT_SYSTEMTRADER_SLUG]
+       ORDER BY p.id, s.slug`
     );
     return (
       result.rows as unknown as {
@@ -389,14 +489,12 @@ export async function listTradingPortfolioTargets(): Promise<
         systemtrader_slug: string;
         last_processed_date: string | null;
         last_processed_timestamp: number | null;
-        last_processed_systemtrader_slug: string | null;
       }[]
     ).map((row) => ({
       id: row.id,
       systemtraderSlug: row.systemtrader_slug,
       lastProcessedDate: row.last_processed_date,
       lastProcessedTimestamp: row.last_processed_timestamp,
-      lastProcessedSystemtraderSlug: row.last_processed_systemtrader_slug,
     }));
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -409,31 +507,42 @@ export async function listPortfolios(): Promise<PortfolioListItem[]> {
   const db = getClient();
   try {
     const portfoliosResult = await db.execute(
-      `SELECT id, name,
-              COALESCE(NULLIF(TRIM(systemtrader_slug), ''), ?) AS systemtrader_slug,
-              last_processed_date,
-              last_processed_timestamp,
-              last_processed_systemtrader_slug
-       FROM portfolios ORDER BY id`,
-      [DEFAULT_SYSTEMTRADER_SLUG]
+      "SELECT id, name FROM portfolios ORDER BY id"
     );
+    const strategiesResult = await db.execute(
+      `SELECT portfolio_id, slug, last_processed_date, last_processed_timestamp
+       FROM portfolio_systemtrader_strategies
+       ORDER BY portfolio_id, slug`
+    );
+    const byPortfolio = new Map<
+      number,
+      { slug: string; lastProcessedDate: string | null; lastProcessedTimestamp: number | null }[]
+    >();
+    for (const r of strategiesResult.rows as unknown as {
+      portfolio_id: number;
+      slug: string;
+      last_processed_date: string | null;
+      last_processed_timestamp: number | null;
+    }[]) {
+      const list = byPortfolio.get(r.portfolio_id) ?? [];
+      list.push({
+        slug: r.slug,
+        lastProcessedDate: r.last_processed_date,
+        lastProcessedTimestamp: r.last_processed_timestamp,
+      });
+      byPortfolio.set(r.portfolio_id, list);
+    }
+
     const schwabIds = await db.execute("SELECT portfolio_id FROM schwab_credentials");
     const tradierIds = await db.execute("SELECT portfolio_id FROM tradier_credentials");
     const schwabSet = new Set(
-      (schwabIds.rows as unknown as { portfolio_id: number }[]).map((r) => r.portfolio_id)
+      (schwabIds.rows as unknown as { portfolio_id: number }[]).map((x) => x.portfolio_id)
     );
     const tradierSet = new Set(
-      (tradierIds.rows as unknown as { portfolio_id: number }[]).map((r) => r.portfolio_id)
+      (tradierIds.rows as unknown as { portfolio_id: number }[]).map((x) => x.portfolio_id)
     );
     return (
-      portfoliosResult.rows as unknown as {
-        id: number;
-        name: string;
-        systemtrader_slug: string;
-        last_processed_date: string | null;
-        last_processed_timestamp: number | null;
-        last_processed_systemtrader_slug: string | null;
-      }[]
+      portfoliosResult.rows as unknown as { id: number; name: string }[]
     ).map((row) => {
       const hasSchwab = schwabSet.has(row.id);
       const hasTradier = tradierSet.has(row.id);
@@ -443,15 +552,20 @@ export async function listPortfolios(): Promise<PortfolioListItem[]> {
         : hasTradier
           ? "tradier"
           : null;
+      const runs = byPortfolio.get(row.id) ?? [];
+      const strategyRuns: PortfolioStrategyRun[] = runs.map((x) => ({
+        slug: x.slug,
+        lastProcessedDate: x.lastProcessedDate,
+        lastProcessedTimestamp: x.lastProcessedTimestamp,
+      }));
+      const systemtraderSlugs = strategyRuns.map((x) => x.slug);
       return {
         id: row.id,
         name: row.name,
         hasCredentials,
         brokerage,
-        systemtraderSlug: row.systemtrader_slug,
-        lastProcessedDate: row.last_processed_date,
-        lastProcessedTimestamp: row.last_processed_timestamp,
-        lastProcessedSystemtraderSlug: row.last_processed_systemtrader_slug,
+        systemtraderSlugs,
+        strategyRuns,
       };
     });
   } catch (error) {
@@ -473,6 +587,11 @@ export async function createPortfolio(name: string): Promise<{ id: number }> {
     if (!row?.id) {
       throw new Error("Insert did not return id");
     }
+    await db.execute(
+      `INSERT INTO portfolio_systemtrader_strategies (portfolio_id, slug, last_processed_date, last_processed_timestamp)
+       VALUES (?, ?, NULL, NULL)`,
+      [row.id, DEFAULT_SYSTEMTRADER_SLUG]
+    );
     return { id: row.id };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

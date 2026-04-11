@@ -1,14 +1,18 @@
 export type PortfolioBrokerage = "schwab" | "tradier" | null;
 
+export interface PortfolioStrategyRun {
+  slug: string;
+  lastProcessedDate: string | null;
+  lastProcessedTimestamp: number | null;
+}
+
 export interface PortfolioItem {
   id: number;
   name: string;
   hasCredentials: boolean;
   brokerage: PortfolioBrokerage;
-  systemtraderSlug: string;
-  lastProcessedDate: string | null;
-  lastProcessedTimestamp: number | null;
-  lastProcessedSystemtraderSlug: string | null;
+  systemtraderSlugs: string[];
+  strategyRuns: PortfolioStrategyRun[];
 }
 
 export async function fetchPortfolios(): Promise<PortfolioItem[]> {
@@ -100,14 +104,14 @@ export async function fetchStatistics(): Promise<Statistics> {
   return r.json();
 }
 
-export async function updatePortfolioSystemTraderStrategy(
+export async function updatePortfolioSystemTraderStrategies(
   portfolioId: number,
-  slug: string
+  slugs: string[]
 ): Promise<{ ok: boolean }> {
   const r = await fetch(`/api/portfolios/${portfolioId}/systemtrader-strategy`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ slug }),
+    body: JSON.stringify({ slugs }),
   });
   const data = (await r.json().catch(() => ({}))) as { error?: string };
   if (!r.ok) {
