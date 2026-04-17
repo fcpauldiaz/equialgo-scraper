@@ -209,12 +209,14 @@ export function startUiServer(): http.Server {
     }
 
     if (pathname === "/api/tradier/connect" && method === "POST") {
+      let connectPortfolioId: number | undefined;
       try {
         const body = await parseBody(req);
         const portfolioId =
           typeof body.portfolioId === "number"
             ? body.portfolioId
             : parseInt(String(body.portfolioId ?? ""), 10);
+        connectPortfolioId = portfolioId;
         const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
         const sandbox = Boolean(body.sandbox);
         if (Number.isNaN(portfolioId) || portfolioId <= 0) {
@@ -230,6 +232,7 @@ export function startUiServer(): http.Server {
           sendJson(res, 404, { error: "Portfolio not found" });
           return;
         }
+        console.log(`[API] Tradier connect: portfolioId=${portfolioId} sandbox=${sandbox}`);
         const accountId = await getTradierAccountId(apiKey, sandbox);
         await writeTradierCredentials(portfolioId, {
           apiKey,
@@ -239,6 +242,10 @@ export function startUiServer(): http.Server {
         sendJson(res, 200, { ok: true });
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
+        console.error(
+          `[API] Tradier connect failed portfolioId=${connectPortfolioId ?? "?"}:`,
+          message
+        );
         sendJson(res, 400, { error: message });
       }
       return;

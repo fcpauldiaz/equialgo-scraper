@@ -1,4 +1,5 @@
 import { createClient } from "@libsql/client";
+import { getTradierAccountId } from "./tradier-client";
 
 export const DEFAULT_SYSTEMTRADER_SLUG = "gemini";
 
@@ -103,8 +104,16 @@ export interface PortfolioListItem {
   name: string;
   hasCredentials: boolean;
   brokerage: PortfolioBrokerage;
+  /** Last 4 characters of stored Tradier account id when brokerage is tradier */
+  tradierAccountLast4: string | null;
   systemtraderSlugs: string[];
   strategyRuns: PortfolioStrategyRun[];
+}
+
+function lastFourOfAccountId(accountId: string | null | undefined): string | null {
+  const s = accountId?.trim() ?? "";
+  if (s.length === 0) return null;
+  return s.slice(-4);
 }
 
 async function getStateColumnNames(db: ReturnType<typeof getClient>): Promise<Set<string>> {
@@ -534,12 +543,42 @@ export async function listPortfolios(): Promise<PortfolioListItem[]> {
     }
 
     const schwabIds = await db.execute("SELECT portfolio_id FROM schwab_credentials");
-    const tradierIds = await db.execute("SELECT portfolio_id FROM tradier_credentials");
+    const tradierRows = await db.execute(
+      "SELECT portfolio_id, account_id, api_key, sandbox FROM tradier_credentials"
+    );
+    const tradierLast4ByPortfolioId = new Map<number, string | null>();
+    const updatedAt = Date.now();
+    for (const r of tradierRows.rows as unknown as {
+      portfolio_id: number;
+      account_id: string | null;
+      api_key: string;
+      sandbox: number;
+    }[]) {
+      let last4 = lastFourOfAccountId(r.account_id);
+      if (last4 == null && r.api_key?.trim()) {
+        try {
+          const resolved = await getTradierAccountId(
+            r.api_key.trim(),
+            r.sandbox === 1
+          );
+          await db.execute(
+            `UPDATE tradier_credentials SET account_id = ?, updated_at = ? WHERE portfolio_id = ?`,
+            [resolved, updatedAt, r.portfolio_id]
+          );
+          last4 = lastFourOfAccountId(resolved);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.warn(
+            `[listPortfolios] Tradier account_id backfill failed for portfolio ${r.portfolio_id}:`,
+            msg
+          );
+        }
+      }
+      tradierLast4ByPortfolioId.set(r.portfolio_id, last4);
+    }
+    const tradierSet = new Set(tradierLast4ByPortfolioId.keys());
     const schwabSet = new Set(
       (schwabIds.rows as unknown as { portfolio_id: number }[]).map((x) => x.portfolio_id)
-    );
-    const tradierSet = new Set(
-      (tradierIds.rows as unknown as { portfolio_id: number }[]).map((x) => x.portfolio_id)
     );
     return (
       portfoliosResult.rows as unknown as { id: number; name: string }[]
@@ -564,6 +603,10 @@ export async function listPortfolios(): Promise<PortfolioListItem[]> {
         name: row.name,
         hasCredentials,
         brokerage,
+        tradierAccountLast4:
+          brokerage === "tradier"
+            ? tradierLast4ByPortfolioId.get(row.id) ?? null
+            : null,
         systemtraderSlugs,
         strategyRuns,
       };

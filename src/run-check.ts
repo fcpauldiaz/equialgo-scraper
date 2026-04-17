@@ -30,6 +30,16 @@ export async function runCheck(): Promise<void> {
       return;
     }
 
+    const uniquePortfolioIds = [...new Set(targets.map((t) => t.id))].sort(
+      (a, b) => a - b
+    );
+    console.log(
+      `Daily check: ${targets.length} strategy target(s) across ${uniquePortfolioIds.length} portfolio(s) [${uniquePortfolioIds.join(", ")}]`
+    );
+    if (filterEnv?.trim()) {
+      console.log(`PORTFOLIO_IDS filter: ${filterEnv.trim()}`);
+    }
+
     const slugToPortfolioIds = new Map<string, number[]>();
     for (const t of targets) {
       const slug = t.systemtraderSlug;
@@ -74,7 +84,8 @@ export async function runCheck(): Promise<void> {
 
       let anyProcessedForSlug = false;
 
-      for (const portfolioId of portfolioIds) {
+      const uniqueIdsForSlug = [...new Set(portfolioIds)];
+      for (const portfolioId of uniqueIdsForSlug) {
         const target = targets.find(
           (x) => x.id === portfolioId && x.systemtraderSlug === slug
         );

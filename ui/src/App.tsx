@@ -238,7 +238,15 @@ function PortfolioRow({
   };
 
   const statusLabel = portfolio.hasCredentials
-    ? `Connected${portfolio.brokerage ? ` (${portfolio.brokerage === "tradier" ? "Tradier" : "Schwab"})` : ""}`
+    ? `Connected${
+        portfolio.brokerage === "tradier"
+          ? portfolio.tradierAccountLast4
+            ? ` (Tradier …${portfolio.tradierAccountLast4})`
+            : " (Tradier)"
+          : portfolio.brokerage === "schwab"
+            ? " (Schwab)"
+            : ""
+      }`
     : "Not connected";
 
   return (
@@ -367,6 +375,7 @@ function DashboardView({
 }) {
   const { data: stats, isLoading, error } = useStatistics();
   const { data: portfolios = [] } = usePortfolios();
+  const [showTradierFormForId, setShowTradierFormForId] = useState<number | null>(null);
 
   return (
     <>
@@ -406,9 +415,9 @@ function DashboardView({
               portfolio={p}
               loginInProgress={loginInProgress}
               onLogin={onLogin}
-              showTradierForm={false}
-              onShowTradierForm={() => {}}
-              onCloseTradierForm={() => {}}
+              showTradierForm={showTradierFormForId === p.id}
+              onShowTradierForm={() => setShowTradierFormForId(p.id)}
+              onCloseTradierForm={() => setShowTradierFormForId(null)}
               showPositionsLink
               onSlugsChange={(id, slugs) =>
                 strategyMutation.mutate({ portfolioId: id, slugs })
@@ -446,6 +455,11 @@ function PortfolioDetailView({
         {portfolio ? ` / ${portfolio.name}` : ` / ${portfolioId}`}
       </p>
       <h1>{portfolio ? portfolio.name : `Portfolio ${portfolioId}`}</h1>
+      {portfolio?.brokerage === "tradier" && portfolio.tradierAccountLast4 && (
+        <p className="portfolio-tradier-account-hint">
+          Tradier account …{portfolio.tradierAccountLast4}
+        </p>
+      )}
       {portfolio && (
         <div className="portfolio-detail-meta">
           <StrategySignalCheckboxes

@@ -72,7 +72,7 @@ Configuration is done via environment variables. Create a `.env` file in the pro
 | `SCHWAB_ORDER_TYPE` | `MARKET` | Order type: `MARKET` or `LIMIT` |
 | `SCHWAB_ENABLE_TRADING` | `false` | Enable/disable automatic trading (safety flag) |
 | `UI_PORT` | `3000` | Port for the admin UI (portfolios and Schwab login) |
-| `PORTFOLIO_IDS` | *(all)* | Comma-separated portfolio IDs to run trades for (e.g. `1,2`); if unset, all portfolios with credentials are used |
+| `PORTFOLIO_IDS` | *(all)* | Comma-separated portfolio IDs to run trades for (e.g. `1,2`); if unset, every portfolio that has **Schwab or Tradier credentials** is included. Strategy checkboxes alone do not enroll a portfolio—the job only sees portfolios with a broker linked. |
 | `SCHWAB_REDIRECT_PORT` | `8765` | Port for OAuth callback (HTTPS); callback URL is `https://127.0.0.1:8765/callback` |
 
 ### Example .env File

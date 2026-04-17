@@ -28,22 +28,83 @@ interface TradierProfileAccount {
 
 interface TradierProfileResponse {
   profile?: {
-    accounts?: TradierProfileAccount[];
+    /** Plural — used by some clients; official docs use `account` */
+    accounts?: TradierProfileAccount[] | TradierProfileAccount;
+    /** Singular — Tradier Brokerage API returns `profile.account` (array or single object when one account) */
+    account?: TradierProfileAccount[] | TradierProfileAccount;
   };
+}
+
+function normalizeProfileAccounts(
+  data: TradierProfileResponse
+): TradierProfileAccount[] {
+  const raw =
+    data.profile?.account ?? data.profile?.accounts;
+  if (raw == null) {
+    return [];
+  }
+  return Array.isArray(raw) ? raw : [raw];
+}
+
+const TRADIER_LOG_BODY_MAX = 6000;
+
+function logTradierProfileFailure(
+  reason: string,
+  sandbox: boolean,
+  text: string,
+  parsed?: TradierProfileResponse
+): void {
+  const base = getBaseUrl(sandbox);
+  console.error(`[Tradier] ${reason} (sandbox=${sandbox}, base=${base})`);
+  if (parsed !== undefined) {
+    const profile = parsed.profile;
+    console.error(
+      "[Tradier] profile object keys:",
+      profile ? Object.keys(profile) : "(missing)"
+    );
+    console.error("[Tradier] response top-level keys:", Object.keys(parsed as object));
+  }
+  const snippet =
+    text.length > TRADIER_LOG_BODY_MAX
+      ? `${text.slice(0, TRADIER_LOG_BODY_MAX)}…`
+      : text;
+  console.error("[Tradier] raw response body:", snippet);
 }
 
 export async function getTradierAccountId(
   apiKey: string,
   sandbox: boolean
 ): Promise<string> {
+  const base = getBaseUrl(sandbox);
+  console.log(`[Tradier] GET ${base}/v1/user/profile (sandbox=${sandbox})`);
+
   const res = await tradierFetch(apiKey, sandbox, "/v1/user/profile");
+  const text = await res.text();
+
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Tradier profile failed: ${res.status} ${text}`);
+    console.error(
+      `[Tradier] profile HTTP ${res.status}:`,
+      text.length > 1200 ? `${text.slice(0, 1200)}…` : text
+    );
+    throw new Error(`Tradier profile failed: ${res.status} ${text.slice(0, 300)}`);
   }
-  const data = (await res.json()) as TradierProfileResponse;
-  const accounts = data.profile?.accounts;
-  if (!Array.isArray(accounts) || accounts.length === 0) {
+
+  let data: TradierProfileResponse;
+  try {
+    data = JSON.parse(text) as TradierProfileResponse;
+  } catch {
+    logTradierProfileFailure("profile response is not valid JSON", sandbox, text);
+    throw new Error("Tradier profile response was not valid JSON");
+  }
+
+  const accounts = normalizeProfileAccounts(data);
+  if (accounts.length === 0) {
+    logTradierProfileFailure(
+      "profile returned no accounts (empty after parse)",
+      sandbox,
+      text,
+      data
+    );
     throw new Error("Tradier profile returned no accounts");
   }
   const active = accounts.find(
@@ -52,8 +113,21 @@ export async function getTradierAccountId(
   const account = active ?? accounts[0];
   const accountNumber = account?.account_number?.trim();
   if (!accountNumber) {
+    console.error(
+      "[Tradier] account entries without account_number:",
+      JSON.stringify(accounts).slice(0, 1000)
+    );
+    logTradierProfileFailure(
+      "profile did not include account_number",
+      sandbox,
+      text,
+      data
+    );
     throw new Error("Tradier profile did not include account_number");
   }
+  console.log(
+    `[Tradier] resolved account (sandbox=${sandbox}) ending …${accountNumber.slice(-4)}`
+  );
   return accountNumber;
 }
 

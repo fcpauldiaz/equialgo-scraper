@@ -77,7 +77,6 @@ export async function sendNotification(signals: ProcessedSignals): Promise<void>
     const errorMessage =
       error instanceof Error ? error.message : String(error);
     console.error("Failed to send notification:", errorMessage);
-    throw error;
   }
 }
 

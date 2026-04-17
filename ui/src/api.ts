@@ -11,6 +11,8 @@ export interface PortfolioItem {
   name: string;
   hasCredentials: boolean;
   brokerage: PortfolioBrokerage;
+  /** Present when linked via Tradier: last 4 characters of account id */
+  tradierAccountLast4: string | null;
   systemtraderSlugs: string[];
   strategyRuns: PortfolioStrategyRun[];
 }
