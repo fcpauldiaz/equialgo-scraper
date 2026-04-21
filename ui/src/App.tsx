@@ -9,8 +9,12 @@ import {
   fetchStatistics,
   fetchPortfolioPositions,
   updatePortfolioSystemTraderStrategies,
+  fetchTradierPreviewAccounts,
+  fetchTradierAccountsForPortfolio,
+  updateTradierPortfolioAccount,
   SYSTEMTRADER_STRATEGY_SLUGS,
   type PortfolioItem,
+  type TradierAccountChoice,
 } from "./api";
 
 const PORTFOLIOS_QUERY_KEY = ["portfolios"] as const;
@@ -18,6 +22,15 @@ const STATISTICS_QUERY_KEY = ["statistics"] as const;
 
 function positionsQueryKey(portfolioId: number) {
   return ["portfolios", portfolioId, "positions"] as const;
+}
+
+function tradierAccountsQueryKey(portfolioId: number) {
+  return ["portfolios", portfolioId, "tradier-accounts"] as const;
+}
+
+function formatTradierAccountOptionLabel(a: TradierAccountChoice): string {
+  const meta = [a.classification, a.type, a.status].filter(Boolean);
+  return meta.length > 0 ? `${a.accountNumber} (${meta.join(" · ")})` : a.accountNumber;
 }
 
 function usePortfolios() {
@@ -71,16 +84,97 @@ function useConnectTradier() {
       portfolioId,
       apiKey,
       sandbox,
+      accountId,
     }: {
       portfolioId: number;
       apiKey: string;
       sandbox: boolean;
-    }) => connectTradier(portfolioId, apiKey, sandbox),
+      accountId: string;
+    }) => connectTradier(portfolioId, apiKey, sandbox, accountId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: PORTFOLIOS_QUERY_KEY });
       queryClient.invalidateQueries({ queryKey: STATISTICS_QUERY_KEY });
     },
   });
+}
+
+function TradierAccountPickPanel({
+  portfolioId,
+  storedAccountNumber,
+  onClose,
+}: {
+  portfolioId: number;
+  storedAccountNumber: string | null;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const { data, isLoading, error } = useQuery({
+    queryKey: tradierAccountsQueryKey(portfolioId),
+    queryFn: () => fetchTradierAccountsForPortfolio(portfolioId),
+  });
+  const [sel, setSel] = useState("");
+  useEffect(() => {
+    const accounts = data?.accounts;
+    if (!accounts?.length) return;
+    const cur = storedAccountNumber?.trim() ?? "";
+    const match = accounts.some((a) => a.accountNumber === cur);
+    setSel(match ? cur : accounts[0].accountNumber);
+  }, [data, storedAccountNumber]);
+  const updateMut = useMutation({
+    mutationFn: (accountId: string) =>
+      updateTradierPortfolioAccount(portfolioId, accountId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: PORTFOLIOS_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: STATISTICS_QUERY_KEY });
+      queryClient.invalidateQueries({
+        queryKey: tradierAccountsQueryKey(portfolioId),
+      });
+      onClose();
+    },
+  });
+  return (
+    <div className="tradier-account-panel">
+      {isLoading && <p className="tradier-account-panel-status">Loading accounts…</p>}
+      {error && <p className="error-msg">{String(error)}</p>}
+      {data?.accounts && data.accounts.length > 0 && (
+        <>
+          <label className="tradier-account-panel-label">
+            Account{" "}
+            <select
+              value={sel}
+              onChange={(e) => setSel(e.target.value)}
+              disabled={updateMut.isPending}
+              className="tradier-account-select"
+            >
+              {data.accounts.map((a) => (
+                <option key={a.accountNumber} value={a.accountNumber}>
+                  {formatTradierAccountOptionLabel(a)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="tradier-account-panel-actions">
+            <button
+              type="button"
+              disabled={updateMut.isPending || !sel}
+              onClick={() => updateMut.mutate(sel)}
+            >
+              {updateMut.isPending ? "Saving…" : "Save account"}
+            </button>
+            <button type="button" onClick={onClose}>
+              Cancel
+            </button>
+          </div>
+          {updateMut.isError && (
+            <p className="error-msg">{String(updateMut.error)}</p>
+          )}
+        </>
+      )}
+      {data?.accounts && data.accounts.length === 0 && (
+        <p className="error-msg">No Tradier accounts returned.</p>
+      )}
+    </div>
+  );
 }
 
 function useVerifyPortfolio() {
@@ -209,6 +303,18 @@ function PortfolioRow({
   const [verifyMsg, setVerifyMsg] = useState<string | null>(null);
   const [tradierApiKey, setTradierApiKey] = useState("");
   const [tradierSandbox, setTradierSandbox] = useState(true);
+  const [previewAccounts, setPreviewAccounts] = useState<TradierAccountChoice[] | null>(null);
+  const [selectedTradierAccount, setSelectedTradierAccount] = useState("");
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [tradierPickerOpen, setTradierPickerOpen] = useState(false);
+
+  useEffect(() => {
+    if (!showTradierForm) return;
+    setPreviewAccounts(null);
+    setSelectedTradierAccount("");
+    setPreviewError(null);
+  }, [showTradierForm, tradierSandbox]);
 
   const handleVerify = () => {
     setVerifyMsg("…");
@@ -222,15 +328,52 @@ function PortfolioRow({
     });
   };
 
+  const handleLoadTradierAccounts = async () => {
+    const key = tradierApiKey.trim();
+    if (!key) return;
+    setPreviewError(null);
+    setPreviewLoading(true);
+    try {
+      const { accounts } = await fetchTradierPreviewAccounts(key, tradierSandbox);
+      setPreviewAccounts(accounts);
+      if (accounts.length === 0) {
+        setPreviewError("No accounts returned for this key.");
+        setSelectedTradierAccount("");
+      } else {
+        const active = accounts.find(
+          (a) => (a.status ?? "").toLowerCase() !== "closed"
+        );
+        setSelectedTradierAccount((active ?? accounts[0]).accountNumber);
+      }
+    } catch (e) {
+      setPreviewError(e instanceof Error ? e.message : String(e));
+      setPreviewAccounts(null);
+      setSelectedTradierAccount("");
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
   const handleTradierSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const key = tradierApiKey.trim();
     if (!key) return;
+    if (!previewAccounts?.length || !selectedTradierAccount) {
+      setPreviewError("Load accounts and select one before saving.");
+      return;
+    }
     connectTradierMutation.mutate(
-      { portfolioId: portfolio.id, apiKey: key, sandbox: tradierSandbox },
+      {
+        portfolioId: portfolio.id,
+        apiKey: key,
+        sandbox: tradierSandbox,
+        accountId: selectedTradierAccount,
+      },
       {
         onSuccess: () => {
           setTradierApiKey("");
+          setPreviewAccounts(null);
+          setSelectedTradierAccount("");
           onCloseTradierForm();
         },
       }
@@ -285,6 +428,11 @@ function PortfolioRow({
               </button>
             </>
           )}
+          {portfolio.hasCredentials && portfolio.brokerage === "tradier" && (
+            <button type="button" onClick={() => setTradierPickerOpen((o) => !o)}>
+              {tradierPickerOpen ? "Cancel" : "Tradier account"}
+            </button>
+          )}
           <button
             type="button"
             onClick={handleVerify}
@@ -320,42 +468,86 @@ function PortfolioRow({
           ))}
         </div>
       )}
+      {portfolio.hasCredentials && portfolio.brokerage === "tradier" && tradierPickerOpen && (
+        <TradierAccountPickPanel
+          portfolioId={portfolio.id}
+          storedAccountNumber={portfolio.tradierAccountNumber}
+          onClose={() => setTradierPickerOpen(false)}
+        />
+      )}
       {showTradierForm && (
         <form
           className="tradier-connect-form"
           onSubmit={handleTradierSubmit}
-          style={{ marginTop: "0.5rem", padding: "0.5rem", border: "1px solid #ccc", borderRadius: "4px" }}
         >
-          <p className="tradier-form-note" style={{ fontSize: "0.85rem", marginBottom: "0.5rem" }}>
-            Your API key is stored securely and cannot be viewed again.
+          <p className="tradier-form-note">
+            Your API key is stored securely and cannot be viewed again. Load accounts, pick the
+            correct one, then save.
           </p>
-          <input
-            type="password"
-            value={tradierApiKey}
-            onChange={(e) => setTradierApiKey(e.target.value)}
-            placeholder="Tradier API key"
-            autoComplete="off"
-            style={{ marginRight: "0.5rem", width: "200px" }}
-          />
-          <label style={{ marginRight: "0.75rem" }}>
+          <div className="tradier-connect-row">
             <input
-              type="checkbox"
-              checked={tradierSandbox}
-              onChange={(e) => setTradierSandbox(e.target.checked)}
-            />{" "}
-            Use sandbox
-          </label>
-          <button type="submit" disabled={connectTradierMutation.isPending || !tradierApiKey.trim()}>
-            {connectTradierMutation.isPending ? "Connecting…" : "Save"}
-          </button>
-          <button type="button" onClick={onCloseTradierForm} style={{ marginLeft: "0.5rem" }}>
-            Cancel
-          </button>
-          {connectTradierMutation.isError && (
-            <span className="error-msg" style={{ marginLeft: "0.5rem" }}>
-              {String(connectTradierMutation.error)}
-            </span>
+              type="password"
+              value={tradierApiKey}
+              onChange={(e) => setTradierApiKey(e.target.value)}
+              placeholder="Tradier API key"
+              autoComplete="off"
+              className="tradier-api-key-input"
+            />
+            <label className="tradier-sandbox-label">
+              <input
+                type="checkbox"
+                checked={tradierSandbox}
+                onChange={(e) => setTradierSandbox(e.target.checked)}
+              />{" "}
+              Use sandbox
+            </label>
+            <button
+              type="button"
+              onClick={handleLoadTradierAccounts}
+              disabled={previewLoading || !tradierApiKey.trim()}
+            >
+              {previewLoading ? "Loading…" : "Load accounts"}
+            </button>
+          </div>
+          {previewAccounts != null && previewAccounts.length > 0 && (
+            <label className="tradier-account-panel-label tradier-connect-account-label">
+              Account{" "}
+              <select
+                value={selectedTradierAccount}
+                onChange={(e) => setSelectedTradierAccount(e.target.value)}
+                disabled={connectTradierMutation.isPending}
+                className="tradier-account-select"
+              >
+                {previewAccounts.map((a) => (
+                  <option key={a.accountNumber} value={a.accountNumber}>
+                    {formatTradierAccountOptionLabel(a)}
+                  </option>
+                ))}
+              </select>
+            </label>
           )}
+          {previewError && <p className="error-msg">{previewError}</p>}
+          <div className="tradier-connect-actions">
+            <button
+              type="submit"
+              disabled={
+                connectTradierMutation.isPending ||
+                !tradierApiKey.trim() ||
+                !previewAccounts?.length ||
+                !selectedTradierAccount
+              }
+            >
+              {connectTradierMutation.isPending ? "Connecting…" : "Save"}
+            </button>
+            <button type="button" onClick={onCloseTradierForm}>
+              Cancel
+            </button>
+            {connectTradierMutation.isError && (
+              <span className="error-msg tradier-connect-error">
+                {String(connectTradierMutation.error)}
+              </span>
+            )}
+          </div>
         </form>
       )}
     </li>
@@ -447,6 +639,7 @@ function PortfolioDetailView({
 }) {
   const portfolio = portfolios.find((p) => p.id === portfolioId);
   const { data: positions, isLoading, error } = usePortfolioPositions(portfolioId);
+  const [tradierPickerOpen, setTradierPickerOpen] = useState(false);
 
   return (
     <>
@@ -455,10 +648,24 @@ function PortfolioDetailView({
         {portfolio ? ` / ${portfolio.name}` : ` / ${portfolioId}`}
       </p>
       <h1>{portfolio ? portfolio.name : `Portfolio ${portfolioId}`}</h1>
-      {portfolio?.brokerage === "tradier" && portfolio.tradierAccountLast4 && (
-        <p className="portfolio-tradier-account-hint">
-          Tradier account …{portfolio.tradierAccountLast4}
-        </p>
+      {portfolio?.brokerage === "tradier" && portfolio.hasCredentials && (
+        <div className="portfolio-detail-tradier">
+          <p className="portfolio-tradier-account-hint">
+            {portfolio.tradierAccountLast4
+              ? `Tradier account …${portfolio.tradierAccountLast4}`
+              : "Tradier linked."}
+          </p>
+          <button type="button" onClick={() => setTradierPickerOpen((o) => !o)}>
+            {tradierPickerOpen ? "Cancel" : "Change Tradier account"}
+          </button>
+          {tradierPickerOpen && (
+            <TradierAccountPickPanel
+              portfolioId={portfolio.id}
+              storedAccountNumber={portfolio.tradierAccountNumber}
+              onClose={() => setTradierPickerOpen(false)}
+            />
+          )}
+        </div>
       )}
       {portfolio && (
         <div className="portfolio-detail-meta">

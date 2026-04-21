@@ -13,8 +13,17 @@ export interface PortfolioItem {
   brokerage: PortfolioBrokerage;
   /** Present when linked via Tradier: last 4 characters of account id */
   tradierAccountLast4: string | null;
+  /** Full Tradier account id when linked (for picker); null if not tradier */
+  tradierAccountNumber: string | null;
   systemtraderSlugs: string[];
   strategyRuns: PortfolioStrategyRun[];
+}
+
+export interface TradierAccountChoice {
+  accountNumber: string;
+  status?: string;
+  classification?: string;
+  type?: string;
 }
 
 export async function fetchPortfolios(): Promise<PortfolioItem[]> {
@@ -52,15 +61,74 @@ export async function startSchwabLogin(portfolioId: number): Promise<{ authUrl: 
   return r.json();
 }
 
+export async function fetchTradierPreviewAccounts(
+  apiKey: string,
+  sandbox: boolean
+): Promise<{ accounts: TradierAccountChoice[] }> {
+  const r = await fetch("/api/tradier/preview-accounts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiKey, sandbox }),
+  });
+  const data = (await r.json().catch(() => ({}))) as {
+    accounts?: TradierAccountChoice[];
+    error?: string;
+  };
+  if (!r.ok) {
+    throw new Error(data.error || r.statusText);
+  }
+  return { accounts: data.accounts ?? [] };
+}
+
+export async function fetchTradierAccountsForPortfolio(
+  portfolioId: number
+): Promise<{ accounts: TradierAccountChoice[] }> {
+  const r = await fetch(`/api/portfolios/${portfolioId}/tradier-accounts`);
+  const data = (await r.json().catch(() => ({}))) as {
+    accounts?: TradierAccountChoice[];
+    error?: string;
+  };
+  if (!r.ok) {
+    throw new Error(data.error || r.statusText);
+  }
+  return { accounts: data.accounts ?? [] };
+}
+
+export async function updateTradierPortfolioAccount(
+  portfolioId: number,
+  accountId: string
+): Promise<{ ok: boolean }> {
+  const r = await fetch(`/api/portfolios/${portfolioId}/tradier-account`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ accountId }),
+  });
+  const data = (await r.json().catch(() => ({}))) as { error?: string };
+  if (!r.ok) {
+    throw new Error(data.error || r.statusText);
+  }
+  return { ok: true };
+}
+
 export async function connectTradier(
   portfolioId: number,
   apiKey: string,
-  sandbox?: boolean
+  sandbox?: boolean,
+  accountId?: string
 ): Promise<{ ok: boolean }> {
+  const trimmed = accountId?.trim();
+  const body: Record<string, unknown> = {
+    portfolioId,
+    apiKey,
+    sandbox: Boolean(sandbox),
+  };
+  if (trimmed) {
+    body.accountId = trimmed;
+  }
   const r = await fetch("/api/tradier/connect", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ portfolioId, apiKey, sandbox }),
+    body: JSON.stringify(body),
   });
   const data = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
   if (!r.ok) {

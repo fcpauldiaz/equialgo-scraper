@@ -1,5 +1,9 @@
 import { createClient } from "@libsql/client";
-import { getTradierAccountId } from "./tradier-client";
+import {
+  getTradierAccountId,
+  isTradierAccountInProfileList,
+  listTradierAccountsForKey,
+} from "./tradier-client";
 
 export const DEFAULT_SYSTEMTRADER_SLUG = "gemini";
 
@@ -106,6 +110,8 @@ export interface PortfolioListItem {
   brokerage: PortfolioBrokerage;
   /** Last 4 characters of stored Tradier account id when brokerage is tradier */
   tradierAccountLast4: string | null;
+  /** Full Tradier account id when linked (for account picker); null if not tradier */
+  tradierAccountNumber: string | null;
   systemtraderSlugs: string[];
   strategyRuns: PortfolioStrategyRun[];
 }
@@ -547,6 +553,7 @@ export async function listPortfolios(): Promise<PortfolioListItem[]> {
       "SELECT portfolio_id, account_id, api_key, sandbox FROM tradier_credentials"
     );
     const tradierLast4ByPortfolioId = new Map<number, string | null>();
+    const tradierAccountNumberByPortfolioId = new Map<number, string | null>();
     const updatedAt = Date.now();
     for (const r of tradierRows.rows as unknown as {
       portfolio_id: number;
@@ -554,8 +561,9 @@ export async function listPortfolios(): Promise<PortfolioListItem[]> {
       api_key: string;
       sandbox: number;
     }[]) {
-      let last4 = lastFourOfAccountId(r.account_id);
-      if (last4 == null && r.api_key?.trim()) {
+      let accountStored = r.account_id?.trim() ?? "";
+      let last4 = lastFourOfAccountId(accountStored || null);
+      if (!accountStored && r.api_key?.trim()) {
         try {
           const resolved = await getTradierAccountId(
             r.api_key.trim(),
@@ -565,6 +573,7 @@ export async function listPortfolios(): Promise<PortfolioListItem[]> {
             `UPDATE tradier_credentials SET account_id = ?, updated_at = ? WHERE portfolio_id = ?`,
             [resolved, updatedAt, r.portfolio_id]
           );
+          accountStored = resolved;
           last4 = lastFourOfAccountId(resolved);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
@@ -575,6 +584,10 @@ export async function listPortfolios(): Promise<PortfolioListItem[]> {
         }
       }
       tradierLast4ByPortfolioId.set(r.portfolio_id, last4);
+      tradierAccountNumberByPortfolioId.set(
+        r.portfolio_id,
+        accountStored.length > 0 ? accountStored : null
+      );
     }
     const tradierSet = new Set(tradierLast4ByPortfolioId.keys());
     const schwabSet = new Set(
@@ -606,6 +619,10 @@ export async function listPortfolios(): Promise<PortfolioListItem[]> {
         tradierAccountLast4:
           brokerage === "tradier"
             ? tradierLast4ByPortfolioId.get(row.id) ?? null
+            : null,
+        tradierAccountNumber:
+          brokerage === "tradier"
+            ? tradierAccountNumberByPortfolioId.get(row.id) ?? null
             : null,
         systemtraderSlugs,
         strategyRuns,
@@ -737,6 +754,32 @@ export async function getPortfolioBrokerage(
   const hasTradier = await readTradierCredentials(portfolioId);
   if (hasTradier) return "tradier";
   return null;
+}
+
+export async function updateTradierPortfolioAccountId(
+  portfolioId: number,
+  accountId: string
+): Promise<void> {
+  const normalized = accountId.trim();
+  if (!normalized) {
+    throw new Error("accountId is required");
+  }
+  const creds = await readTradierCredentials(portfolioId);
+  if (!creds) {
+    throw new Error("No Tradier credentials for this portfolio");
+  }
+  const list = await listTradierAccountsForKey(creds.apiKey, creds.sandbox);
+  if (!isTradierAccountInProfileList(normalized, list)) {
+    throw new Error(
+      "Selected account is not in your Tradier profile for this API key."
+    );
+  }
+  const db = getClient();
+  const updatedAt = Date.now();
+  await db.execute(
+    `UPDATE tradier_credentials SET account_id = ?, updated_at = ? WHERE portfolio_id = ?`,
+    [normalized, updatedAt, portfolioId]
+  );
 }
 
 export async function readTradierCredentials(

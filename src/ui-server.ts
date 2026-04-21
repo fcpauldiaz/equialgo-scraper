@@ -7,9 +7,15 @@ import {
   readJobStatistics,
   writeTradierCredentials,
   setPortfolioSystemTraderStrategies,
+  readTradierCredentials,
+  updateTradierPortfolioAccountId,
 } from "./state";
 import { startSchwabLoginFlow, handleSchwabCallback } from "./schwab-oauth";
-import { getTradierAccountId } from "./tradier-client";
+import {
+  getTradierAccountId,
+  isTradierAccountInProfileList,
+  listTradierAccountsForKey,
+} from "./tradier-client";
 import { verifyConnection, getPortfolioPositions } from "./trader";
 
 const UI_PORT = parseInt(process.env.UI_PORT || "3000", 10);
@@ -208,6 +214,88 @@ export function startUiServer(): http.Server {
       return;
     }
 
+    if (pathname === "/api/tradier/preview-accounts" && method === "POST") {
+      try {
+        const body = await parseBody(req);
+        const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+        const sandbox = Boolean(body.sandbox);
+        if (!apiKey) {
+          sendJson(res, 400, { error: "apiKey is required" });
+          return;
+        }
+        const accounts = await listTradierAccountsForKey(apiKey, sandbox);
+        sendJson(res, 200, { accounts });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        sendJson(res, 400, { error: message });
+      }
+      return;
+    }
+
+    const tradierAccountsListMatch = pathname.match(
+      /^\/api\/portfolios\/(\d+)\/tradier-accounts$/
+    );
+    if (tradierAccountsListMatch && method === "GET") {
+      const portfolioId = parseInt(tradierAccountsListMatch[1], 10);
+      if (Number.isNaN(portfolioId) || portfolioId <= 0) {
+        sendJson(res, 400, { error: "Invalid portfolio id" });
+        return;
+      }
+      try {
+        const creds = await readTradierCredentials(portfolioId);
+        if (!creds) {
+          sendJson(res, 400, { error: "This portfolio is not connected with Tradier." });
+          return;
+        }
+        const accounts = await listTradierAccountsForKey(creds.apiKey, creds.sandbox);
+        sendJson(res, 200, { accounts });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        sendJson(res, 400, { error: message });
+      }
+      return;
+    }
+
+    const tradierAccountPutMatch = pathname.match(
+      /^\/api\/portfolios\/(\d+)\/tradier-account$/
+    );
+    if (tradierAccountPutMatch && method === "PUT") {
+      const portfolioId = parseInt(tradierAccountPutMatch[1], 10);
+      if (Number.isNaN(portfolioId) || portfolioId <= 0) {
+        sendJson(res, 400, { error: "Invalid portfolio id" });
+        return;
+      }
+      try {
+        const body = await parseBody(req);
+        const accountId =
+          typeof body.accountId === "string" ? body.accountId.trim() : "";
+        if (!accountId) {
+          sendJson(res, 400, { error: "accountId is required" });
+          return;
+        }
+        const portfolios = await listPortfolios();
+        if (!portfolios.some((p) => p.id === portfolioId)) {
+          sendJson(res, 404, { error: "Portfolio not found" });
+          return;
+        }
+        await updateTradierPortfolioAccountId(portfolioId, accountId);
+        sendJson(res, 200, { ok: true });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        let status = 500;
+        if (message === "Portfolio not found") status = 404;
+        else if (
+          message.includes("not in your Tradier profile") ||
+          message.includes("No Tradier credentials") ||
+          message.includes("accountId is required")
+        ) {
+          status = 400;
+        }
+        sendJson(res, status, { error: message });
+      }
+      return;
+    }
+
     if (pathname === "/api/tradier/connect" && method === "POST") {
       let connectPortfolioId: number | undefined;
       try {
@@ -219,6 +307,8 @@ export function startUiServer(): http.Server {
         connectPortfolioId = portfolioId;
         const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
         const sandbox = Boolean(body.sandbox);
+        const accountIdFromBody =
+          typeof body.accountId === "string" ? body.accountId.trim() : "";
         if (Number.isNaN(portfolioId) || portfolioId <= 0) {
           sendJson(res, 400, { error: "portfolioId is required" });
           return;
@@ -233,7 +323,20 @@ export function startUiServer(): http.Server {
           return;
         }
         console.log(`[API] Tradier connect: portfolioId=${portfolioId} sandbox=${sandbox}`);
-        const accountId = await getTradierAccountId(apiKey, sandbox);
+        let accountId: string;
+        if (accountIdFromBody) {
+          const choices = await listTradierAccountsForKey(apiKey, sandbox);
+          if (!isTradierAccountInProfileList(accountIdFromBody, choices)) {
+            sendJson(res, 400, {
+              error:
+                "Selected account is not in your Tradier profile for this API key.",
+            });
+            return;
+          }
+          accountId = accountIdFromBody;
+        } else {
+          accountId = await getTradierAccountId(apiKey, sandbox);
+        }
         await writeTradierCredentials(portfolioId, {
           apiKey,
           accountId,

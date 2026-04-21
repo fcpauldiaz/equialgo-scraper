@@ -109,7 +109,115 @@ ul {
 .portfolio-tradier-account-hint {
   font-size: 0.9rem;
   color: #555;
+  margin: -0.2rem 0 0.35rem;
+}
+
+.portfolio-detail-tradier {
   margin: -0.2rem 0 0.75rem;
+}
+
+.portfolio-detail-tradier > button {
+  margin-top: 0.35rem;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.tradier-account-panel {
+  margin-top: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.tradier-account-panel-status {
+  font-size: 0.875rem;
+  margin: 0;
+  color: #555;
+}
+
+.tradier-account-panel-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  font-size: 0.875rem;
+}
+
+.tradier-connect-account-label {
+  margin-top: 0.65rem;
+}
+
+.tradier-account-select {
+  min-width: 12rem;
+  max-width: 100%;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.875rem;
+}
+
+.tradier-account-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.65rem;
+}
+
+.tradier-account-panel-actions button {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.tradier-connect-form {
+  margin-top: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+}
+
+.tradier-form-note {
+  font-size: 0.85rem;
+  margin: 0 0 0.5rem;
+  color: #444;
+}
+
+.tradier-connect-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.tradier-api-key-input {
+  min-width: 10rem;
+  flex: 1 1 10rem;
+  max-width: 100%;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.875rem;
+}
+
+.tradier-sandbox-label {
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+.tradier-connect-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.65rem;
+}
+
+.tradier-connect-actions button {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.tradier-connect-error {
+  margin-top: 0;
 }
 
 @media (max-width: 380px) {
