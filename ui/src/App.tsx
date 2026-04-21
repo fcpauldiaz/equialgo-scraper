@@ -6,6 +6,7 @@ import {
   startSchwabLogin,
   connectTradier,
   verifyPortfolio,
+  runPortfolioDailyCheck,
   fetchStatistics,
   fetchPortfolioPositions,
   updatePortfolioSystemTraderStrategies,
@@ -183,6 +184,20 @@ function useVerifyPortfolio() {
   });
 }
 
+function useRunPortfolioDailyCheck() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (portfolioId: number) => runPortfolioDailyCheck(portfolioId),
+    onSuccess: (_data, portfolioId) => {
+      queryClient.invalidateQueries({ queryKey: PORTFOLIOS_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: STATISTICS_QUERY_KEY });
+      queryClient.invalidateQueries({
+        queryKey: positionsQueryKey(portfolioId),
+      });
+    },
+  });
+}
+
 function usePortfolioStrategyMutation() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -299,8 +314,10 @@ function PortfolioRow({
   strategyUpdatePending: boolean;
 }) {
   const verifyMutation = useVerifyPortfolio();
+  const runDailyCheckMutation = useRunPortfolioDailyCheck();
   const connectTradierMutation = useConnectTradier();
   const [verifyMsg, setVerifyMsg] = useState<string | null>(null);
+  const [runCheckMsg, setRunCheckMsg] = useState<string | null>(null);
   const [tradierApiKey, setTradierApiKey] = useState("");
   const [tradierSandbox, setTradierSandbox] = useState(true);
   const [previewAccounts, setPreviewAccounts] = useState<TradierAccountChoice[] | null>(null);
@@ -324,6 +341,18 @@ function PortfolioRow({
       },
       onError: () => {
         setVerifyMsg("Error");
+      },
+    });
+  };
+
+  const handleRunDailyCheck = () => {
+    setRunCheckMsg("Running…");
+    runDailyCheckMutation.mutate(portfolio.id, {
+      onSuccess: () => {
+        setRunCheckMsg("Done");
+      },
+      onError: (error) => {
+        setRunCheckMsg(error instanceof Error ? error.message : String(error));
       },
     });
   };
@@ -440,6 +469,15 @@ function PortfolioRow({
           >
             Verify
           </button>
+          {portfolio.hasCredentials && (
+            <button
+              type="button"
+              onClick={handleRunDailyCheck}
+              disabled={runDailyCheckMutation.isPending}
+            >
+              {runDailyCheckMutation.isPending ? "Running daily check…" : "Run daily check"}
+            </button>
+          )}
           {verifyMsg !== null && (
             <span className="verify-msg">
               {verifyMsg}
@@ -450,6 +488,7 @@ function PortfolioRow({
                 )}
             </span>
           )}
+          {runCheckMsg !== null && <span className="verify-msg">{runCheckMsg}</span>}
         </div>
       </div>
       <StrategySignalCheckboxes
@@ -640,6 +679,20 @@ function PortfolioDetailView({
   const portfolio = portfolios.find((p) => p.id === portfolioId);
   const { data: positions, isLoading, error } = usePortfolioPositions(portfolioId);
   const [tradierPickerOpen, setTradierPickerOpen] = useState(false);
+  const runDailyCheckMutation = useRunPortfolioDailyCheck();
+  const [runCheckMsg, setRunCheckMsg] = useState<string | null>(null);
+
+  const handleRunDailyCheck = () => {
+    setRunCheckMsg("Running…");
+    runDailyCheckMutation.mutate(portfolioId, {
+      onSuccess: () => {
+        setRunCheckMsg("Done");
+      },
+      onError: (runError) => {
+        setRunCheckMsg(runError instanceof Error ? runError.message : String(runError));
+      },
+    });
+  };
 
   return (
     <>
@@ -685,6 +738,20 @@ function PortfolioDetailView({
                   {r.slug}: {r.lastProcessedDate ?? "—"}
                 </span>
               ))}
+            </div>
+          )}
+          {portfolio.hasCredentials && (
+            <div className="portfolio-manual-run">
+              <button
+                type="button"
+                onClick={handleRunDailyCheck}
+                disabled={runDailyCheckMutation.isPending}
+              >
+                {runDailyCheckMutation.isPending
+                  ? "Running daily check…"
+                  : "Run daily check now"}
+              </button>
+              {runCheckMsg && <span className="verify-msg">{runCheckMsg}</span>}
             </div>
           )}
           {portfolioUrlEnvOverride && (

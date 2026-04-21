@@ -17,6 +17,7 @@ import {
   listTradierAccountsForKey,
 } from "./tradier-client";
 import { verifyConnection, getPortfolioPositions } from "./trader";
+import { runCheckForPortfolio } from "./run-check";
 
 const UI_PORT = parseInt(process.env.UI_PORT || "3000", 10);
 
@@ -210,6 +211,30 @@ export function startUiServer(): http.Server {
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         sendJson(res, 500, { ok: false, message });
+      }
+      return;
+    }
+
+    const runDailyCheckMatch = pathname.match(
+      /^\/api\/portfolios\/(\d+)\/run-daily-check$/
+    );
+    if (runDailyCheckMatch && method === "POST") {
+      const portfolioId = parseInt(runDailyCheckMatch[1], 10);
+      if (Number.isNaN(portfolioId) || portfolioId <= 0) {
+        sendJson(res, 400, { error: "Invalid portfolio id" });
+        return;
+      }
+      try {
+        const portfolios = await listPortfolios();
+        if (!portfolios.some((p) => p.id === portfolioId)) {
+          sendJson(res, 404, { error: "Portfolio not found" });
+          return;
+        }
+        await runCheckForPortfolio(portfolioId);
+        sendJson(res, 200, { ok: true });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        sendJson(res, 500, { error: message });
       }
       return;
     }

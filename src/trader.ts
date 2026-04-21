@@ -812,7 +812,7 @@ export async function executeTrades(
     console.log(
       `Trading is disabled for ${brokerage}. Set ${brokerage === "schwab" ? "SCHWAB" : "TRADIER"}_ENABLE_TRADING=true to enable.`
     );
-    return summary;
+    return { ...summary, tradingDisabled: true };
   }
   if (!brokerage) {
     return summary;
@@ -926,7 +926,7 @@ export async function executeTradesFromActions(
     console.log(
       `Trading is disabled for ${brokerage}. Set ${brokerage === "schwab" ? "SCHWAB" : "TRADIER"}_ENABLE_TRADING=true to enable.`
     );
-    return summary;
+    return { ...summary, tradingDisabled: true };
   }
   if (!brokerage) {
     return summary;

@@ -102,6 +102,20 @@ ul {
   margin-top: 0.35rem;
 }
 
+.portfolio-manual-run {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.55rem;
+}
+
+.portfolio-manual-run button {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
 .portfolio-detail-meta {
   margin-bottom: 1rem;
 }

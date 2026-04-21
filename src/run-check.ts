@@ -12,15 +12,21 @@ import {
 const JOB_RETRY_ATTEMPTS = Math.max(1, parseInt(process.env.SCRAPE_JOB_RETRY_ATTEMPTS || "3", 10));
 const JOB_RETRY_DELAY_MS = Math.max(0, parseInt(process.env.SCRAPE_JOB_RETRY_DELAY_MS || "60000", 10));
 
-export async function runCheck(): Promise<void> {
+interface RunCheckOptions {
+  portfolioIds?: readonly number[];
+}
+
+export async function runCheck(options: RunCheckOptions = {}): Promise<void> {
   try {
     console.log("Starting daily check...");
 
     let targets = await listTradingPortfolioTargets();
-    const filterEnv = process.env.PORTFOLIO_IDS;
-    if (filterEnv) {
+    const requestedPortfolioIds = options.portfolioIds ?? [];
+    if (requestedPortfolioIds.length > 0) {
       const allowed = new Set(
-        filterEnv.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n))
+        requestedPortfolioIds
+          .map((id) => Number(id))
+          .filter((id) => Number.isInteger(id) && id > 0)
       );
       targets = targets.filter((t) => allowed.has(t.id));
     }
@@ -36,8 +42,8 @@ export async function runCheck(): Promise<void> {
     console.log(
       `Daily check: ${targets.length} strategy target(s) across ${uniquePortfolioIds.length} portfolio(s) [${uniquePortfolioIds.join(", ")}]`
     );
-    if (filterEnv?.trim()) {
-      console.log(`PORTFOLIO_IDS filter: ${filterEnv.trim()}`);
+    if (requestedPortfolioIds.length > 0) {
+      console.log(`Manual run filter: ${uniquePortfolioIds.join(", ")}`);
     }
 
     const slugToPortfolioIds = new Map<string, number[]>();
@@ -105,6 +111,13 @@ export async function runCheck(): Promise<void> {
           `Portfolio ${portfolioId}: ${tradeSummary.successful.length} successful, ${tradeSummary.failed.length} failed, ${tradeSummary.skipped.length} skipped`
         );
 
+        if (tradeSummary.tradingDisabled) {
+          console.log(
+            `Portfolio ${portfolioId}: trading disabled in env — not marking ${scrapedData.date} processed for "${slug}". Set TRADIER_ENABLE_TRADING=true or SCHWAB_ENABLE_TRADING=true and run again.`
+          );
+          continue;
+        }
+
         const timestamp = new Date(scrapedData.date).getTime();
         await writePortfolioProcessedState(portfolioId, scrapedData.date, timestamp, slug);
         target.lastProcessedDate = scrapedData.date;
@@ -128,6 +141,13 @@ export async function runCheck(): Promise<void> {
     console.error("Error in daily check:", errorMessage);
     throw error;
   }
+}
+
+export async function runCheckForPortfolio(portfolioId: number): Promise<void> {
+  if (!Number.isInteger(portfolioId) || portfolioId <= 0) {
+    throw new Error("Invalid portfolio id");
+  }
+  await runCheck({ portfolioIds: [portfolioId] });
 }
 
 export async function runDailyCheckWithRetries(): Promise<void> {

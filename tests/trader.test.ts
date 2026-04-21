@@ -522,6 +522,7 @@ describe('Trader', () => {
 
       const result = await executeTradesFromActions(actions, 1);
 
+      expect(result.tradingDisabled).toBe(true);
       expect(result.successful).toHaveLength(0);
       expect(result.failed).toHaveLength(0);
       expect(mockPlaceTradierOrder).not.toHaveBeenCalled();

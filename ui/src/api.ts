@@ -149,6 +149,19 @@ export async function verifyPortfolio(portfolioId: number): Promise<VerifyResult
   return r.json();
 }
 
+export async function runPortfolioDailyCheck(
+  portfolioId: number
+): Promise<{ ok: boolean }> {
+  const r = await fetch(`/api/portfolios/${portfolioId}/run-daily-check`, {
+    method: "POST",
+  });
+  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  if (!r.ok) {
+    throw new Error(data.error || r.statusText);
+  }
+  return { ok: data.ok ?? true };
+}
+
 export interface Statistics {
   lastProcessedDate: string | null;
   lastProcessedTimestamp: number | null;

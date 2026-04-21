@@ -88,4 +88,6 @@ export interface TradeExecutionSummary {
   successful: TradeExecutionResult[];
   failed: TradeExecutionResult[];
   skipped: Array<{ symbol: string; reason: string }>;
+  /** True when *_ENABLE_TRADING is off — no orders were attempted */
+  tradingDisabled?: boolean;
 }

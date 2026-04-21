@@ -72,7 +72,6 @@ Configuration is done via environment variables. Create a `.env` file in the pro
 | `SCHWAB_ORDER_TYPE` | `MARKET` | Order type: `MARKET` or `LIMIT` |
 | `SCHWAB_ENABLE_TRADING` | `false` | Enable/disable automatic trading (safety flag) |
 | `UI_PORT` | `3000` | Port for the admin UI (portfolios and Schwab login) |
-| `PORTFOLIO_IDS` | *(all)* | Comma-separated portfolio IDs to run trades for (e.g. `1,2`); if unset, every portfolio that has **Schwab or Tradier credentials** is included. Strategy checkboxes alone do not enroll a portfolio—the job only sees portfolios with a broker linked. |
 | `SCHWAB_REDIRECT_PORT` | `8765` | Port for OAuth callback (HTTPS); callback URL is `https://127.0.0.1:8765/callback` |
 
 ### Example .env File
@@ -230,7 +229,7 @@ When the service is running, an admin UI is available for adding portfolios and 
    - For each portfolio, click **Login with Schwab**. A new window opens for Schwab sign-in; after you authorize, tokens and account number are saved for that portfolio.
    - Use **Verify** to confirm the connection.
 
-6. Each scheduled `daily-check` run performs **one scrape per distinct signal source** among connected portfolios, then executes that strategy’s actions for **each portfolio** that uses that source. Optionally set `PORTFOLIO_IDS=1,2` to limit which portfolios are used.
+6. Each scheduled `daily-check` run performs **one scrape per distinct signal source** among connected portfolios, then executes that strategy’s actions for **each portfolio** that uses that source (every portfolio returned by the app’s trading-target list: broker-linked plus selected strategies).
 
 ### Option B: CLI login script (single default portfolio)
 
