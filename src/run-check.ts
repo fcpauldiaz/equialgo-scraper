@@ -17,6 +17,7 @@ interface RunCheckOptions {
 }
 
 export async function runCheck(options: RunCheckOptions = {}): Promise<void> {
+  const encounteredErrors: string[] = [];
   try {
     console.log("Starting daily check...");
 
@@ -62,7 +63,15 @@ export async function runCheck(options: RunCheckOptions = {}): Promise<void> {
       const portfolioUrl = resolveEffectiveSystemTraderPortfolioUrl(slug);
       console.log(`Scraping strategy "${slug}" for ${portfolioIds.length} portfolio(s)...`);
 
-      const scrapedData = await scrapePortfolioData(portfolioUrl);
+      let scrapedData;
+      try {
+        scrapedData = await scrapePortfolioData(portfolioUrl);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        encounteredErrors.push(`Strategy "${slug}" scrape failed: ${errorMessage}`);
+        console.error(`Strategy "${slug}" scrape failed:`, errorMessage);
+        continue;
+      }
 
       if (!scrapedData.actions || scrapedData.actions.length === 0) {
         console.warn(`No actions found for strategy "${slug}"`);
@@ -106,7 +115,20 @@ export async function runCheck(options: RunCheckOptions = {}): Promise<void> {
 
         console.log(`Portfolio ${portfolioId}: processing ${scrapedData.date} (${slug})`);
 
-        const tradeSummary = await executeTradesFromActions(scaledActions, portfolioId);
+        let tradeSummary;
+        try {
+          tradeSummary = await executeTradesFromActions(scaledActions, portfolioId);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          encounteredErrors.push(
+            `Portfolio ${portfolioId} (${slug}) execution failed: ${errorMessage}`
+          );
+          console.error(
+            `Portfolio ${portfolioId}: execution failed for "${slug}":`,
+            errorMessage
+          );
+          continue;
+        }
         console.log(
           `Portfolio ${portfolioId}: ${tradeSummary.successful.length} successful, ${tradeSummary.failed.length} failed, ${tradeSummary.skipped.length} skipped`
         );
@@ -129,12 +151,23 @@ export async function runCheck(options: RunCheckOptions = {}): Promise<void> {
       if (anyProcessedForSlug) {
         const notifyKey = `${slug}:${scrapedData.date}`;
         if (!notifiedSlugDate.has(notifyKey)) {
-          const processedSignals = processedSignalsFromActions(scrapedData);
-          await sendNotification(processedSignals);
-          notifiedSlugDate.add(notifyKey);
+          try {
+            const processedSignals = processedSignalsFromActions(scrapedData);
+            await sendNotification(processedSignals);
+            notifiedSlugDate.add(notifyKey);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            encounteredErrors.push(`Strategy "${slug}" notification failed: ${errorMessage}`);
+            console.error(`Strategy "${slug}": notification failed:`, errorMessage);
+          }
         }
         console.log(`Strategy "${slug}": state updated for date ${scrapedData.date}`);
       }
+    }
+    if (encounteredErrors.length > 0) {
+      throw new Error(
+        `Daily check completed with ${encounteredErrors.length} error(s): ${encounteredErrors.join(" | ")}`
+      );
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
