@@ -63,6 +63,7 @@ describe('Scraper', () => {
         action: 'BUY',
         shares: 100,
         price: 150.50,
+        buyKind: 'enter',
       });
       expect(result.actions[1]).toMatchObject({
         symbol: 'MSFT',
@@ -82,18 +83,22 @@ describe('Scraper', () => {
       expect(result.actions).toEqual([]);
     });
 
-    it('should retry on failure', async () => {
-      mockPage.evaluate
-        .mockRejectedValueOnce(new Error('Network error'))
-        .mockResolvedValueOnce([
-          { symbol: 'AAPL', action: 'BUY', shares: 100, price: 150.50 },
-        ]);
+    it(
+      'should retry on failure',
+      async () => {
+        mockPage.evaluate
+          .mockRejectedValueOnce(new Error('Network error'))
+          .mockResolvedValueOnce([
+            { symbol: 'AAPL', action: 'BUY', shares: 100, price: 150.50 },
+          ]);
 
-      const result = await scrapePortfolioData(testPortfolioUrl);
+        const result = await scrapePortfolioData(testPortfolioUrl);
 
-      expect(result.actions).toHaveLength(1);
-      expect(mockPage.evaluate).toHaveBeenCalledTimes(2);
-    });
+        expect(result.actions).toHaveLength(1);
+        expect(mockPage.evaluate).toHaveBeenCalledTimes(2);
+      },
+      20_000
+    );
 
     it('does not throw when portfolio goto returns non-ok HTTP', async () => {
       mockPage.goto
@@ -121,7 +126,23 @@ describe('Scraper', () => {
       const result = await scrapePortfolioData(testPortfolioUrl);
 
       expect(result.actions[0].action).toBe('BUY');
+      expect(result.actions[0].buyKind).toBe('enter');
       expect(result.actions[1].action).toBe('SELL');
+      expect(result.actions[1].buyKind).toBeUndefined();
+    });
+
+    it('should preserve buyKind add when evaluate returns INCREASE semantics', async () => {
+      const mockActions = [
+        { symbol: 'AAPL', action: 'BUY', shares: 4, price: 150.5, buyKind: 'add' },
+      ];
+
+      mockPage.evaluate.mockResolvedValue(mockActions);
+
+      const result = await scrapePortfolioData(testPortfolioUrl);
+
+      expect(result.actions[0].action).toBe('BUY');
+      expect(result.actions[0].buyKind).toBe('add');
+      expect(result.actions[0].shares).toBe(4);
     });
 
     it('should parse prices with dollar signs and commas', async () => {

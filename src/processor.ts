@@ -65,12 +65,18 @@ export function scaleActionsToPortfolioSize(
   if (actions.length === 0) {
     return actions;
   }
-  const buyActions = actions.filter((a) => a.action === "BUY");
-  const numBuys = buyActions.length;
+
+  const enterBuys = actions.filter(
+    (a) => a.action === "BUY" && a.buyKind !== "add"
+  );
+  const numBuys = enterBuys.length;
   const allocationPerPosition =
     numBuys > 0 ? targetPortfolioSize / numBuys : targetPortfolioSize;
 
   return actions.map((action) => {
+    if (action.action === "BUY" && action.buyKind === "add") {
+      return { ...action };
+    }
     if (action.action === "BUY") {
       const shares =
         action.price > 0

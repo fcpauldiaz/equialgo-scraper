@@ -32,11 +32,15 @@ export interface Trade {
   daily_change: number;
 }
 
+/** INCREASE / rebalance adds map to BUY with buyKind "add"; new entries use "enter". */
+export type PortfolioBuyKind = "enter" | "add";
+
 export interface PortfolioAction {
   symbol: string;
   action: "BUY" | "SELL";
   shares: number;
   price: number;
+  buyKind?: PortfolioBuyKind;
 }
 
 export interface ScrapedPortfolioData {

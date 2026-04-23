@@ -987,6 +987,25 @@ export async function executeTradesFromActions(
       continue;
     }
 
+    const existing = positions.get(action.symbol);
+    const isAdd = action.buyKind === "add";
+
+    if (!isAdd && existing && existing.longQuantity > 0) {
+      summary.skipped.push({
+        symbol: action.symbol,
+        reason: `Already holding ${existing.longQuantity} shares (enter); use INCREASE for adds`,
+      });
+      continue;
+    }
+
+    if (isAdd && action.shares <= 0) {
+      summary.skipped.push({
+        symbol: action.symbol,
+        reason: "Non-positive add size",
+      });
+      continue;
+    }
+
     const result = await placeBuyOrder(
       portfolioId,
       action.symbol,
@@ -995,6 +1014,18 @@ export async function executeTradesFromActions(
     );
     if (result.success) {
       summary.successful.push(result);
+      if (isAdd && existing) {
+        positions.set(action.symbol, {
+          ...existing,
+          longQuantity: existing.longQuantity + action.shares,
+        });
+      } else if (isAdd && !existing) {
+        positions.set(action.symbol, {
+          symbol: action.symbol,
+          longQuantity: action.shares,
+          shortQuantity: 0,
+        });
+      }
       console.log(
         `✓ BUY order placed: ${action.symbol} - ${action.shares} shares @ $${action.price.toFixed(2)}`
       );

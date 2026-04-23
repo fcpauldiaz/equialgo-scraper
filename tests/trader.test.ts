@@ -441,6 +441,63 @@ describe('Trader', () => {
       });
     });
 
+    it('should skip enter BUY when already holding the symbol', async () => {
+      mockSchwabClient.trader.accounts.getAccountByNumber.mockResolvedValue({
+        securitiesAccount: {
+          positions: [
+            { instrument: { symbol: 'AAPL' }, longQuantity: 12, shortQuantity: 0 },
+          ],
+        },
+      });
+
+      const { executeTradesFromActions } = await import('../src/trader');
+      const actions: PortfolioAction[] = [
+        { symbol: 'AAPL', action: 'BUY', shares: 50, price: 150.5, buyKind: 'enter' },
+      ];
+
+      const result = await executeTradesFromActions(actions, 1);
+
+      expect(result.successful).toHaveLength(0);
+      expect(result.skipped).toHaveLength(1);
+      expect(result.skipped[0].reason).toMatch(/Already holding/);
+      const placeOrderFetches = mockFetch.mock.calls.filter(
+        (call: unknown[]) => (call[0] as string).includes('/orders')
+      );
+      expect(placeOrderFetches).toHaveLength(0);
+    });
+
+    it('should place add BUY for shares when already holding (rebalance increase)', async () => {
+      mockSchwabClient.trader.accounts.getAccountByNumber.mockResolvedValue({
+        securitiesAccount: {
+          positions: [
+            { instrument: { symbol: 'AAPL' }, longQuantity: 12, shortQuantity: 0 },
+          ],
+        },
+      });
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ orderId: 1 })),
+        json: () => Promise.resolve({ orderId: 1 }),
+      } as Response);
+
+      const { executeTradesFromActions } = await import('../src/trader');
+      const actions: PortfolioAction[] = [
+        { symbol: 'AAPL', action: 'BUY', shares: 3, price: 150.5, buyKind: 'add' },
+      ];
+
+      const result = await executeTradesFromActions(actions, 1);
+
+      expect(result.successful).toHaveLength(1);
+      expect(result.successful[0]).toMatchObject({
+        symbol: 'AAPL',
+        action: 'BUY',
+        shares: 3,
+        success: true,
+      });
+      expect(mockFetch).toHaveBeenCalled();
+    });
+
     it('should handle missing credentials', async () => {
       mockReadSchwabCredentials.mockResolvedValue(null);
       mockGetPortfolioBrokerage.mockResolvedValue('schwab');

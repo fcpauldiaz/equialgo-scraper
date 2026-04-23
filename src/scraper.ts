@@ -58,17 +58,6 @@ function parseShares(changeText: string): number {
   return Math.abs(parsed);
 }
 
-function normalizeAction(actionText: string): "BUY" | "SELL" {
-  const upper = actionText.toUpperCase().trim();
-  if (upper === "BUY" || upper === "INCREASE") {
-    return "BUY";
-  }
-  if (upper === "SELL" || upper === "DECREASE") {
-    return "SELL";
-  }
-  throw new Error(`Unknown action: ${actionText}`);
-}
-
 function extractDate(page: Page): string {
   const today = new Date();
   return today.toISOString().split("T")[0];
@@ -165,6 +154,7 @@ export async function scrapePortfolioData(
           action: string;
           shares: number;
           price: number;
+          buyKind?: "enter" | "add";
         }> = [];
 
         const headings = Array.from(doc.querySelectorAll("h1, h2, h3, h4, caption, th"));
@@ -294,6 +284,12 @@ export async function scrapePortfolioData(
               action: normalizedAction,
               shares,
               price,
+              buyKind:
+                normalizedAction === "BUY"
+                  ? action === "INCREASE"
+                    ? "add"
+                    : "enter"
+                  : undefined,
             });
           } catch (err) {
             console.warn(`Error parsing row for ${symbolText}:`, err);
@@ -314,6 +310,12 @@ export async function scrapePortfolioData(
         action: a.action as "BUY" | "SELL",
         shares: a.shares,
         price: a.price,
+        buyKind:
+          a.action === "BUY"
+            ? a.buyKind === "add"
+              ? "add"
+              : "enter"
+            : undefined,
       }));
 
       console.log(`Scraped ${portfolioActions.length} actions for date ${date}`);
