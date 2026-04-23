@@ -400,13 +400,24 @@ export async function writePortfolioProcessedState(
 ): Promise<void> {
   const db = getClient();
   const normalized = parseAndNormalizeSystemTraderSlug(processedSlug);
+  const dateNormalized = date.trim();
   await db.execute(
     `UPDATE portfolio_systemtrader_strategies SET
        last_processed_date = ?,
        last_processed_timestamp = ?
-     WHERE portfolio_id = ? AND slug = ?`,
-    [date, timestamp, portfolioId, normalized]
+     WHERE portfolio_id = ? AND lower(trim(slug)) = ?`,
+    [dateNormalized, timestamp, portfolioId, normalized]
   );
+  const verify = await db.execute(
+    `SELECT 1 AS ok FROM portfolio_systemtrader_strategies
+     WHERE portfolio_id = ? AND lower(trim(slug)) = ? AND trim(last_processed_date) = ?`,
+    [portfolioId, normalized, dateNormalized]
+  );
+  if (verify.rows.length === 0) {
+    throw new Error(
+      `Processed state was not persisted for portfolio ${portfolioId} strategy "${normalized}" (no matching row or date mismatch). Ensure this portfolio has that strategy selected in the UI.`
+    );
+  }
 }
 
 function dedupeSlugsStable(slugs: string[]): string[] {
@@ -476,10 +487,12 @@ export function shouldProcess(
   date: string,
   lastProcessedDateForSlug: string | null
 ): boolean {
-  if (!lastProcessedDateForSlug) {
+  const nextDate = date.trim();
+  const prior = lastProcessedDateForSlug?.trim() ?? "";
+  if (prior.length === 0) {
     return true;
   }
-  return lastProcessedDateForSlug !== date;
+  return prior !== nextDate;
 }
 
 export async function listTradingPortfolioTargets(): Promise<
@@ -498,19 +511,45 @@ export async function listTradingPortfolioTargets(): Promise<
           OR EXISTS (SELECT 1 FROM tradier_credentials t WHERE t.portfolio_id = p.id)
        ORDER BY p.id, s.slug`
     );
-    return (
-      result.rows as unknown as {
-        id: number;
-        systemtrader_slug: string;
-        last_processed_date: string | null;
-        last_processed_timestamp: number | null;
-      }[]
-    ).map((row) => ({
-      id: row.id,
-      systemtraderSlug: row.systemtrader_slug,
-      lastProcessedDate: row.last_processed_date,
-      lastProcessedTimestamp: row.last_processed_timestamp,
-    }));
+    const rows = result.rows as unknown as {
+      id: number | string | bigint;
+      systemtrader_slug: string;
+      last_processed_date: string | null;
+      last_processed_timestamp: number | null;
+    }[];
+
+    const targets: TradingPortfolioTarget[] = [];
+    for (const row of rows) {
+      const id = Number(row.id);
+      if (!Number.isInteger(id) || id <= 0) {
+        console.warn(
+          "[listTradingPortfolioTargets] Skipping row with invalid portfolio id:",
+          row.id
+        );
+        continue;
+      }
+      let slug: string;
+      try {
+        slug = parseAndNormalizeSystemTraderSlug(String(row.systemtrader_slug ?? ""));
+      } catch {
+        console.warn(
+          "[listTradingPortfolioTargets] Skipping row with invalid strategy slug:",
+          row.systemtrader_slug
+        );
+        continue;
+      }
+      const lastProcessedDate =
+        typeof row.last_processed_date === "string"
+          ? row.last_processed_date.trim() || null
+          : row.last_processed_date;
+      targets.push({
+        id,
+        systemtraderSlug: slug,
+        lastProcessedDate,
+        lastProcessedTimestamp: row.last_processed_timestamp,
+      });
+    }
+    return targets;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error("Error listing trading portfolio targets:", errorMessage);

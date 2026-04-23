@@ -12,4 +12,13 @@ describe("shouldProcess", () => {
   it("returns false when same date already processed for this slug", () => {
     expect(shouldProcess("2025-03-22", "2025-03-22")).toBe(false);
   });
+
+  it("treats whitespace-only prior date as absent", () => {
+    expect(shouldProcess("2025-03-22", "   ")).toBe(true);
+  });
+
+  it("ignores surrounding whitespace when comparing dates", () => {
+    expect(shouldProcess("2025-03-22", " 2025-03-22 ")).toBe(false);
+    expect(shouldProcess(" 2025-03-23 ", "2025-03-22")).toBe(true);
+  });
 });

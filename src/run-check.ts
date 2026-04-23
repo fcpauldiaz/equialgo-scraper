@@ -8,6 +8,7 @@ import {
   resolveEffectiveSystemTraderPortfolioUrl,
   writePortfolioProcessedState,
 } from "./state";
+import type { PortfolioAction, ScrapedPortfolioData } from "./types";
 
 const JOB_RETRY_ATTEMPTS = Math.max(1, parseInt(process.env.SCRAPE_JOB_RETRY_ATTEMPTS || "3", 10));
 const JOB_RETRY_DELAY_MS = Math.max(0, parseInt(process.env.SCRAPE_JOB_RETRY_DELAY_MS || "60000", 10));
@@ -15,6 +16,11 @@ const JOB_RETRY_DELAY_MS = Math.max(0, parseInt(process.env.SCRAPE_JOB_RETRY_DEL
 interface RunCheckOptions {
   portfolioIds?: readonly number[];
 }
+
+type SlugRunPrepared =
+  | { kind: "ready"; scrapedData: ScrapedPortfolioData; scaledActions: PortfolioAction[] }
+  | { kind: "scrape_failed" }
+  | { kind: "no_actions" };
 
 export async function runCheck(options: RunCheckOptions = {}): Promise<void> {
   const encounteredErrors: string[] = [];
@@ -47,35 +53,44 @@ export async function runCheck(options: RunCheckOptions = {}): Promise<void> {
       console.log(`Manual run filter: ${uniquePortfolioIds.join(", ")}`);
     }
 
-    const slugToPortfolioIds = new Map<string, number[]>();
-    for (const t of targets) {
-      const slug = t.systemtraderSlug;
-      if (!slugToPortfolioIds.has(slug)) {
-        slugToPortfolioIds.set(slug, []);
-      }
-      slugToPortfolioIds.get(slug)!.push(t.id);
-    }
-
     const notifiedSlugDate = new Set<string>();
+    const warnedNoActionsSlugs = new Set<string>();
+    const slugPrepBySlug = new Map<string, SlugRunPrepared>();
     const PORTFOLIO_SIZE = parseInt(process.env.PORTFOLIO_SIZE || "10000", 10);
 
-    for (const [slug, portfolioIds] of slugToPortfolioIds) {
-      const portfolioUrl = resolveEffectiveSystemTraderPortfolioUrl(slug);
-      console.log(`Scraping strategy "${slug}" for ${portfolioIds.length} portfolio(s)...`);
+    const targetsSorted = [...targets].sort((a, b) => {
+      if (a.id !== b.id) return a.id - b.id;
+      return a.systemtraderSlug.localeCompare(b.systemtraderSlug);
+    });
 
-      let scrapedData;
+    async function ensureSlugPrepared(slug: string): Promise<SlugRunPrepared> {
+      const existing = slugPrepBySlug.get(slug);
+      if (existing) return existing;
+
+      const portfolioUrl = resolveEffectiveSystemTraderPortfolioUrl(slug);
+      const portfolioCount = targetsSorted.filter((t) => t.systemtraderSlug === slug).length;
+      console.log(`Scraping strategy "${slug}" for ${portfolioCount} portfolio(s)...`);
+
+      let scrapedData: ScrapedPortfolioData;
       try {
         scrapedData = await scrapePortfolioData(portfolioUrl);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         encounteredErrors.push(`Strategy "${slug}" scrape failed: ${errorMessage}`);
         console.error(`Strategy "${slug}" scrape failed:`, errorMessage);
-        continue;
+        const failed: SlugRunPrepared = { kind: "scrape_failed" };
+        slugPrepBySlug.set(slug, failed);
+        return failed;
       }
 
       if (!scrapedData.actions || scrapedData.actions.length === 0) {
-        console.warn(`No actions found for strategy "${slug}"`);
-        continue;
+        if (!warnedNoActionsSlugs.has(slug)) {
+          console.warn(`No actions found for strategy "${slug}"`);
+          warnedNoActionsSlugs.add(slug);
+        }
+        const empty: SlugRunPrepared = { kind: "no_actions" };
+        slugPrepBySlug.set(slug, empty);
+        return empty;
       }
 
       console.log(
@@ -97,72 +112,90 @@ export async function runCheck(options: RunCheckOptions = {}): Promise<void> {
         );
       }
 
-      let anyProcessedForSlug = false;
+      const ready: SlugRunPrepared = { kind: "ready", scrapedData, scaledActions };
+      slugPrepBySlug.set(slug, ready);
+      return ready;
+    }
 
-      const uniqueIdsForSlug = [...new Set(portfolioIds)];
-      for (const portfolioId of uniqueIdsForSlug) {
-        const target = targets.find(
-          (x) => x.id === portfolioId && x.systemtraderSlug === slug
+    for (const target of targetsSorted) {
+      const slug = target.systemtraderSlug;
+      const portfolioId = target.id;
+
+      const prep = await ensureSlugPrepared(slug);
+      if (prep.kind !== "ready") {
+        continue;
+      }
+
+      const { scrapedData, scaledActions } = prep;
+      const signalDate = scrapedData.date.trim();
+
+      if (!shouldProcess(signalDate, target.lastProcessedDate)) {
+        console.log(
+          `Portfolio ${portfolioId}: already processed ${signalDate} for "${slug}", skipping`
         );
-        if (!target) continue;
+        continue;
+      }
 
-        if (!shouldProcess(scrapedData.date, target.lastProcessedDate)) {
-          console.log(
-            `Portfolio ${portfolioId}: already processed ${scrapedData.date} for "${slug}", skipping`
-          );
-          continue;
-        }
+      console.log(`Portfolio ${portfolioId}: processing ${signalDate} (${slug})`);
 
-        console.log(`Portfolio ${portfolioId}: processing ${scrapedData.date} (${slug})`);
+      let tradeSummary;
+      try {
+        tradeSummary = await executeTradesFromActions(scaledActions, portfolioId);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        encounteredErrors.push(
+          `Portfolio ${portfolioId} (${slug}) execution failed: ${errorMessage}`
+        );
+        console.error(
+          `Portfolio ${portfolioId}: execution failed for "${slug}":`,
+          errorMessage
+        );
+        continue;
+      }
+      console.log(
+        `Portfolio ${portfolioId}: ${tradeSummary.successful.length} successful, ${tradeSummary.failed.length} failed, ${tradeSummary.skipped.length} skipped`
+      );
 
-        let tradeSummary;
+      if (tradeSummary.tradingDisabled) {
+        console.log(
+          `Portfolio ${portfolioId}: trading disabled in env — not marking ${signalDate} processed for "${slug}". Set TRADIER_ENABLE_TRADING=true or SCHWAB_ENABLE_TRADING=true and run again.`
+        );
+        continue;
+      }
+
+      const timestamp = new Date(signalDate).getTime();
+      try {
+        await writePortfolioProcessedState(portfolioId, signalDate, timestamp, slug);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        encounteredErrors.push(
+          `Portfolio ${portfolioId} (${slug}) failed to save processed state: ${errorMessage}`
+        );
+        console.error(
+          `Portfolio ${portfolioId}: could not persist processed state for "${slug}":`,
+          errorMessage
+        );
+        continue;
+      }
+
+      target.lastProcessedDate = signalDate;
+      target.lastProcessedTimestamp = timestamp;
+
+      const notifyKey = `${slug}:${signalDate}`;
+      if (!notifiedSlugDate.has(notifyKey)) {
         try {
-          tradeSummary = await executeTradesFromActions(scaledActions, portfolioId);
+          const processedSignals = processedSignalsFromActions(scrapedData);
+          await sendNotification(processedSignals);
+          notifiedSlugDate.add(notifyKey);
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
-          encounteredErrors.push(
-            `Portfolio ${portfolioId} (${slug}) execution failed: ${errorMessage}`
-          );
-          console.error(
-            `Portfolio ${portfolioId}: execution failed for "${slug}":`,
-            errorMessage
-          );
-          continue;
+          encounteredErrors.push(`Strategy "${slug}" notification failed: ${errorMessage}`);
+          console.error(`Strategy "${slug}": notification failed:`, errorMessage);
         }
-        console.log(
-          `Portfolio ${portfolioId}: ${tradeSummary.successful.length} successful, ${tradeSummary.failed.length} failed, ${tradeSummary.skipped.length} skipped`
-        );
-
-        if (tradeSummary.tradingDisabled) {
-          console.log(
-            `Portfolio ${portfolioId}: trading disabled in env — not marking ${scrapedData.date} processed for "${slug}". Set TRADIER_ENABLE_TRADING=true or SCHWAB_ENABLE_TRADING=true and run again.`
-          );
-          continue;
-        }
-
-        const timestamp = new Date(scrapedData.date).getTime();
-        await writePortfolioProcessedState(portfolioId, scrapedData.date, timestamp, slug);
-        target.lastProcessedDate = scrapedData.date;
-        target.lastProcessedTimestamp = timestamp;
-
-        anyProcessedForSlug = true;
       }
-
-      if (anyProcessedForSlug) {
-        const notifyKey = `${slug}:${scrapedData.date}`;
-        if (!notifiedSlugDate.has(notifyKey)) {
-          try {
-            const processedSignals = processedSignalsFromActions(scrapedData);
-            await sendNotification(processedSignals);
-            notifiedSlugDate.add(notifyKey);
-          } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            encounteredErrors.push(`Strategy "${slug}" notification failed: ${errorMessage}`);
-            console.error(`Strategy "${slug}": notification failed:`, errorMessage);
-          }
-        }
-        console.log(`Strategy "${slug}": state updated for date ${scrapedData.date}`);
-      }
+      console.log(
+        `Portfolio ${portfolioId}: marked ${signalDate} processed for "${slug}"`
+      );
     }
     if (encounteredErrors.length > 0) {
       throw new Error(
