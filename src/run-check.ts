@@ -13,6 +13,20 @@ import type { PortfolioAction, ScrapedPortfolioData } from "./types";
 const JOB_RETRY_ATTEMPTS = Math.max(1, parseInt(process.env.SCRAPE_JOB_RETRY_ATTEMPTS || "3", 10));
 const JOB_RETRY_DELAY_MS = Math.max(0, parseInt(process.env.SCRAPE_JOB_RETRY_DELAY_MS || "60000", 10));
 
+export const DAILY_CHECK_TIMEZONE = process.env.DAILY_CHECK_TIMEZONE || "America/New_York";
+
+function isWeekendInTimeZone(timeZone: string, when: Date = new Date()): boolean {
+  const short = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+  }).format(when);
+  return short === "Sat" || short === "Sun";
+}
+
+export type RunCheckResult =
+  | { kind: "weekend_skip" }
+  | { kind: "complete" };
+
 interface RunCheckOptions {
   portfolioIds?: readonly number[];
 }
@@ -22,7 +36,23 @@ type SlugRunPrepared =
   | { kind: "scrape_failed" }
   | { kind: "no_actions" };
 
-export async function runCheck(options: RunCheckOptions = {}): Promise<void> {
+export async function runCheck(options: RunCheckOptions = {}): Promise<RunCheckResult> {
+  if (process.env.DAILY_CHECK_ALLOW_WEEKENDS !== "true") {
+    if (isWeekendInTimeZone(DAILY_CHECK_TIMEZONE)) {
+      const label = new Intl.DateTimeFormat("en-US", {
+        timeZone: DAILY_CHECK_TIMEZONE,
+        weekday: "long",
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      }).format(new Date());
+      console.log(
+        `Skipping daily check: weekend in ${DAILY_CHECK_TIMEZONE} (${label}). Set DAILY_CHECK_ALLOW_WEEKENDS=true to run anyway.`
+      );
+      return { kind: "weekend_skip" };
+    }
+  }
+
   const encounteredErrors: string[] = [];
   try {
     console.log("Starting daily check...");
@@ -40,7 +70,7 @@ export async function runCheck(options: RunCheckOptions = {}): Promise<void> {
 
     if (targets.length === 0) {
       console.log("No portfolios with Schwab or Tradier credentials; nothing to run.");
-      return;
+      return { kind: "complete" };
     }
 
     const uniquePortfolioIds = [...new Set(targets.map((t) => t.id))].sort(
@@ -208,6 +238,7 @@ export async function runCheck(options: RunCheckOptions = {}): Promise<void> {
         `Daily check completed with ${encounteredErrors.length} error(s): ${encounteredErrors.join(" | ")}`
       );
     }
+    return { kind: "complete" };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error("Error in daily check:", errorMessage);
@@ -215,11 +246,11 @@ export async function runCheck(options: RunCheckOptions = {}): Promise<void> {
   }
 }
 
-export async function runCheckForPortfolio(portfolioId: number): Promise<void> {
+export async function runCheckForPortfolio(portfolioId: number): Promise<RunCheckResult> {
   if (!Number.isInteger(portfolioId) || portfolioId <= 0) {
     throw new Error("Invalid portfolio id");
   }
-  await runCheck({ portfolioIds: [portfolioId] });
+  return runCheck({ portfolioIds: [portfolioId] });
 }
 
 export async function runDailyCheckWithRetries(): Promise<void> {
@@ -232,7 +263,10 @@ export async function runDailyCheckWithRetries(): Promise<void> {
   let lastError: Error | undefined;
   for (let attempt = 1; attempt <= JOB_RETRY_ATTEMPTS; attempt++) {
     try {
-      await runCheck();
+      const outcome = await runCheck();
+      if (outcome.kind === "weekend_skip") {
+        return;
+      }
       return;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));

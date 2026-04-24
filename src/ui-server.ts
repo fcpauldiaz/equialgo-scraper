@@ -17,7 +17,7 @@ import {
   listTradierAccountsForKey,
 } from "./tradier-client";
 import { verifyConnection, getPortfolioPositions } from "./trader";
-import { runCheckForPortfolio } from "./run-check";
+import { DAILY_CHECK_TIMEZONE, runCheckForPortfolio } from "./run-check";
 
 const UI_PORT = parseInt(process.env.UI_PORT || "3000", 10);
 
@@ -230,7 +230,15 @@ export function startUiServer(): http.Server {
           sendJson(res, 404, { error: "Portfolio not found" });
           return;
         }
-        await runCheckForPortfolio(portfolioId);
+        const outcome = await runCheckForPortfolio(portfolioId);
+        if (outcome.kind === "weekend_skip") {
+          sendJson(res, 200, {
+            ok: true,
+            skipped: "weekend",
+            message: `Daily check does not run on weekends (${DAILY_CHECK_TIMEZONE}). Set DAILY_CHECK_ALLOW_WEEKENDS=true to override.`,
+          });
+          return;
+        }
         sendJson(res, 200, { ok: true });
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);

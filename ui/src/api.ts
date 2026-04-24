@@ -149,17 +149,32 @@ export async function verifyPortfolio(portfolioId: number): Promise<VerifyResult
   return r.json();
 }
 
+export type RunPortfolioDailyCheckResult = {
+  ok: boolean;
+  skipped?: "weekend";
+  message?: string;
+};
+
 export async function runPortfolioDailyCheck(
   portfolioId: number
-): Promise<{ ok: boolean }> {
+): Promise<RunPortfolioDailyCheckResult> {
   const r = await fetch(`/api/portfolios/${portfolioId}/run-daily-check`, {
     method: "POST",
   });
-  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  const data = (await r.json().catch(() => ({}))) as {
+    ok?: boolean;
+    error?: string;
+    skipped?: string;
+    message?: string;
+  };
   if (!r.ok) {
     throw new Error(data.error || r.statusText);
   }
-  return { ok: data.ok ?? true };
+  return {
+    ok: data.ok ?? true,
+    skipped: data.skipped === "weekend" ? "weekend" : undefined,
+    message: typeof data.message === "string" ? data.message : undefined,
+  };
 }
 
 export interface Statistics {

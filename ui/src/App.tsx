@@ -348,8 +348,12 @@ function PortfolioRow({
   const handleRunDailyCheck = () => {
     setRunCheckMsg("Running…");
     runDailyCheckMutation.mutate(portfolio.id, {
-      onSuccess: () => {
-        setRunCheckMsg("Done");
+      onSuccess: (result) => {
+        setRunCheckMsg(
+          result.skipped === "weekend"
+            ? result.message ?? "Skipped (weekend)."
+            : "Done"
+        );
       },
       onError: (error) => {
         setRunCheckMsg(error instanceof Error ? error.message : String(error));
@@ -685,8 +689,12 @@ function PortfolioDetailView({
   const handleRunDailyCheck = () => {
     setRunCheckMsg("Running…");
     runDailyCheckMutation.mutate(portfolioId, {
-      onSuccess: () => {
-        setRunCheckMsg("Done");
+      onSuccess: (result) => {
+        setRunCheckMsg(
+          result.skipped === "weekend"
+            ? result.message ?? "Skipped (weekend)."
+            : "Done"
+        );
       },
       onError: (runError) => {
         setRunCheckMsg(runError instanceof Error ? runError.message : String(runError));
