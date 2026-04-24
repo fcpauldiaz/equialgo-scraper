@@ -49,6 +49,12 @@ export async function runCheck(options: RunCheckOptions = {}): Promise<void> {
     console.log(
       `Daily check: ${targets.length} strategy target(s) across ${uniquePortfolioIds.length} portfolio(s) [${uniquePortfolioIds.join(", ")}]`
     );
+    const eligibleSpecs = [...targets]
+      .sort((a, b) =>
+        a.id !== b.id ? a.id - b.id : a.systemtraderSlug.localeCompare(b.systemtraderSlug)
+      )
+      .map((t) => `${t.id}:${t.systemtraderSlug}`);
+    console.log(`Eligible strategy targets (portfolio:slug): ${eligibleSpecs.join(", ")}`);
     if (requestedPortfolioIds.length > 0) {
       console.log(`Manual run filter: ${uniquePortfolioIds.join(", ")}`);
     }

@@ -28,15 +28,8 @@ let schwabApiModule: any = null;
 
 async function getSchwabApiModule() {
   if (!schwabApiModule) {
-    // In Jest, use require() so jest.mock('@sudowealth/schwab-api') applies. Everywhere else
-    // use dynamic import() because @sudowealth/schwab-api is ESM-only (require() throws ERR_REQUIRE_ESM).
-    if (typeof process !== "undefined" && process.env.JEST_WORKER_ID !== undefined) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      schwabApiModule = require("@sudowealth/schwab-api");
-    } else {
-      const importDynamic = new Function("specifier", "return import(specifier)");
-      schwabApiModule = await importDynamic("@sudowealth/schwab-api");
-    }
+    const importDynamic = new Function("specifier", "return import(specifier)");
+    schwabApiModule = await importDynamic("@sudowealth/schwab-api");
   }
   return schwabApiModule;
 }
@@ -146,6 +139,13 @@ interface Position {
   currentDayProfitLossPercentage?: number;
   longOpenProfitLoss?: number;
   marketValue?: number;
+}
+
+/** Enter / model BUY rows carry a target share count; buy only what is missing vs the account. */
+function buyGapToTargetShares(targetShares: number, heldLongShares: number): number {
+  const target = Math.max(0, Math.floor(targetShares));
+  const held = Math.max(0, Math.floor(heldLongShares));
+  return Math.max(0, target - held);
 }
 
 async function initializeSchwabClient(portfolioId: number): Promise<SchwabApiClient> {
@@ -841,10 +841,15 @@ export async function executeTrades(
 
   for (const signal of signals.enterSignals) {
     const position = positions.get(signal.symbol);
-    if (position && position.longQuantity > 0) {
+    const held = position?.longQuantity ?? 0;
+    const sharesToBuy = buyGapToTargetShares(signal.shares, held);
+    if (sharesToBuy <= 0) {
       summary.skipped.push({
         symbol: signal.symbol,
-        reason: `Already holding ${position.longQuantity} shares`,
+        reason:
+          held > 0
+            ? `Already at or above target (${held} shares, target ${Math.floor(signal.shares)})`
+            : "Zero shares to buy for target size",
       });
       continue;
     }
@@ -852,14 +857,19 @@ export async function executeTrades(
     const result = await placeBuyOrder(
       portfolioId,
       signal.symbol,
-      signal.shares,
+      sharesToBuy,
       signal.current_price
     );
 
     if (result.success) {
       summary.successful.push(result);
+      positions.set(signal.symbol, {
+        symbol: signal.symbol,
+        longQuantity: held + sharesToBuy,
+        shortQuantity: position?.shortQuantity ?? 0,
+      });
       console.log(
-        `✓ BUY order placed: ${signal.symbol} - ${signal.shares} shares @ $${signal.current_price.toFixed(2)}`
+        `✓ BUY order placed: ${signal.symbol} - ${sharesToBuy} shares @ $${signal.current_price.toFixed(2)}`
       );
     } else {
       summary.failed.push(result);
@@ -988,46 +998,59 @@ export async function executeTradesFromActions(
     }
 
     const existing = positions.get(action.symbol);
+    const held = existing?.longQuantity ?? 0;
     const isAdd = action.buyKind === "add";
 
-    if (!isAdd && existing && existing.longQuantity > 0) {
+    if (action.shares <= 0) {
+      const bad = await placeBuyOrder(
+        portfolioId,
+        action.symbol,
+        action.shares,
+        action.price
+      );
+      summary.failed.push(bad);
+      console.error(`✗ BUY order failed: ${action.symbol} - ${bad.error}`);
+      continue;
+    }
+
+    let sharesToBuy: number;
+    if (isAdd) {
+      sharesToBuy = Math.floor(action.shares);
+    } else {
+      sharesToBuy = buyGapToTargetShares(action.shares, held);
+    }
+
+    if (sharesToBuy <= 0) {
       summary.skipped.push({
         symbol: action.symbol,
-        reason: `Already holding ${existing.longQuantity} shares (enter); use INCREASE for adds`,
+        reason: isAdd
+          ? "Non-positive add size"
+          : held > 0
+            ? `Already at or above target (${held} shares, target ${Math.floor(action.shares)})`
+            : "Zero shares to buy for target size",
       });
       continue;
     }
 
-    if (isAdd && action.shares <= 0) {
-      summary.skipped.push({
-        symbol: action.symbol,
-        reason: "Non-positive add size",
-      });
-      continue;
-    }
+    console.log(
+      `${action.symbol}: BUY ${isAdd ? "add" : "enter"} → ${sharesToBuy} sh (held ${held}, signal ${action.shares})`
+    );
 
     const result = await placeBuyOrder(
       portfolioId,
       action.symbol,
-      action.shares,
+      sharesToBuy,
       action.price
     );
     if (result.success) {
       summary.successful.push(result);
-      if (isAdd && existing) {
-        positions.set(action.symbol, {
-          ...existing,
-          longQuantity: existing.longQuantity + action.shares,
-        });
-      } else if (isAdd && !existing) {
-        positions.set(action.symbol, {
-          symbol: action.symbol,
-          longQuantity: action.shares,
-          shortQuantity: 0,
-        });
-      }
+      positions.set(action.symbol, {
+        symbol: action.symbol,
+        longQuantity: held + sharesToBuy,
+        shortQuantity: existing?.shortQuantity ?? 0,
+      });
       console.log(
-        `✓ BUY order placed: ${action.symbol} - ${action.shares} shares @ $${action.price.toFixed(2)}`
+        `✓ BUY order placed: ${action.symbol} - ${sharesToBuy} shares @ $${action.price.toFixed(2)}`
       );
     } else {
       summary.failed.push(result);

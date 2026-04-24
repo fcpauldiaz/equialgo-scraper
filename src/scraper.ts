@@ -1,4 +1,4 @@
-import puppeteer, { type Browser, type Page } from "puppeteer";
+import puppeteer, { type Browser, type ElementHandle, type Page } from "puppeteer";
 import { ScrapedPortfolioData, PortfolioAction } from "./types";
 
 const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || "3", 10);
@@ -11,6 +11,160 @@ function getSignInUrl(portfolioUrl: string): string {
   const base = new URL(portfolioUrl).origin;
   const callbackPath = new URL(portfolioUrl).pathname;
   return `${base}/signin?callbackUrl=${encodeURIComponent(callbackPath)}`;
+}
+
+const LOGIN_PASSWORD_SELECTOR_CANDIDATES = [
+  'input[type="password"]',
+  'input[name="password" i]',
+  'input[id="password" i]',
+] as const;
+
+/**
+ * Prefer name/autocomplete/text fields first: sites often keep a hidden `type="email"` duplicate
+ * that passes boundingBox but fails `waitForSelector(..., { visible: true })`.
+ */
+const LOGIN_EMAIL_SELECTOR_CANDIDATES = [
+  'input[name="email" i]',
+  'input[id="email" i]',
+  'input[autocomplete="email"]',
+  'input[autocomplete="username"]',
+  'input[type="text"][name*="mail" i]',
+  'input[type="text"][placeholder*="mail" i]',
+  'input[type="email"]',
+] as const;
+
+const SIGN_IN_NAV_STEPS = 15;
+
+function pathnameNormalized(url: string): string {
+  try {
+    let p = new URL(url).pathname.toLowerCase();
+    if (p.length > 1 && p.endsWith("/")) {
+      p = p.slice(0, -1);
+    }
+    return p;
+  } catch {
+    return "";
+  }
+}
+
+function desiredPortfolioPathname(portfolioUrl: string): string {
+  return pathnameNormalized(portfolioUrl);
+}
+
+async function fieldIsUsableForTyping(
+  page: Page,
+  handle: ElementHandle<Element>
+): Promise<boolean> {
+  try {
+    return await page.evaluate((el: Element) => {
+      if (!(el instanceof HTMLElement)) {
+        return false;
+      }
+      const s = window.getComputedStyle(el);
+      if (s.display === "none" || s.visibility === "hidden" || parseFloat(s.opacity) < 0.05) {
+        return false;
+      }
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) {
+        return false;
+      }
+      const input = el as HTMLInputElement;
+      if (input.disabled || input.readOnly) {
+        return false;
+      }
+      return true;
+    }, handle);
+  } catch {
+    return false;
+  }
+}
+
+async function detectLoginForm(
+  page: Page
+): Promise<{ emailSel: string; passwordSel: string } | null> {
+  for (const emailSel of LOGIN_EMAIL_SELECTOR_CANDIDATES) {
+    const emailHandle = await page.$(emailSel);
+    if (!emailHandle || !(await fieldIsUsableForTyping(page, emailHandle))) {
+      continue;
+    }
+    for (const passwordSel of LOGIN_PASSWORD_SELECTOR_CANDIDATES) {
+      const passHandle = await page.$(passwordSel);
+      if (passHandle && (await fieldIsUsableForTyping(page, passHandle))) {
+        return { emailSel, passwordSel };
+      }
+    }
+  }
+  return null;
+}
+
+async function navigateToUrl(page: Page, targetUrl: string, portfolioUrl: string): Promise<void> {
+  const want = desiredPortfolioPathname(portfolioUrl);
+  const u = new URL(targetUrl);
+  u.searchParams.set("_nav", String(Date.now()));
+  const href = u.toString();
+  await page.goto(href, { waitUntil: "load", timeout: 45000 });
+  await sleep(2800);
+
+  const here = pathnameNormalized(page.url());
+  const targetPath = pathnameNormalized(u.pathname);
+  if (
+    targetPath === want &&
+    (here === "/profile" || here.startsWith("/profile/"))
+  ) {
+    console.log("Still on /profile after goto; forcing location.assign to portfolio");
+    await page.evaluate((dest: string) => {
+      window.location.assign(dest);
+    }, href);
+    await sleep(3500);
+  }
+}
+
+async function submitLoginCredentials(
+  page: Page,
+  email: string,
+  password: string,
+  emailSel: string,
+  passwordSel: string
+): Promise<void> {
+  console.log(`[scraper] submitting login (email: ${emailSel}, password: ${passwordSel})`);
+  await page.waitForSelector(emailSel, { timeout: 20000 });
+  await page.waitForSelector(passwordSel, { timeout: 15000 });
+  await page.evaluate((sel: string) => {
+    document.querySelector(sel)?.scrollIntoView({ block: "center", inline: "nearest" });
+  }, emailSel);
+  await page.evaluate((sel: string) => {
+    document.querySelector(sel)?.scrollIntoView({ block: "center", inline: "nearest" });
+  }, passwordSel);
+
+  await page.type(emailSel, email, { delay: 50 });
+  await page.type(passwordSel, password, { delay: 50 });
+
+  const submit =
+    (await page.$('button[type="submit"]')) ||
+    (await page.$('input[type="submit"]'));
+  if (submit) {
+    await submit.click();
+  } else {
+    const buttons = await page.$$("button, [role='button']");
+    let clicked = false;
+    for (const btn of buttons) {
+      const text = await page.evaluate((el) => (el as HTMLElement).textContent?.toLowerCase() || "", btn);
+      if (text.includes("sign in")) {
+        await btn.click();
+        clicked = true;
+        break;
+      }
+    }
+    if (!clicked) throw new Error("Could not find Sign In submit button");
+  }
+
+  await Promise.race([
+    page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }),
+    new Promise((_, rej) => setTimeout(() => rej(new Error("Login navigation timeout")), 15000)),
+  ]).catch(() => {
+    // Navigation might have completed already; continue
+  });
+  await sleep(1000);
 }
 
 let browser: Browser | null = null;
@@ -71,44 +225,73 @@ async function signIn(
   portfolioUrl: string
 ): Promise<void> {
   const signInUrl = getSignInUrl(portfolioUrl);
-  console.log("Signing in before scrape...");
-  await page.goto(signInUrl, { waitUntil: "networkidle2", timeout: 30000 });
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  const wantPath = desiredPortfolioPathname(portfolioUrl);
 
-  const emailSel = 'input[type="email"]';
-  const passwordSel = 'input[type="password"]';
-  await page.waitForSelector(emailSel, { timeout: 10000 });
-  await page.waitForSelector(passwordSel, { timeout: 5000 });
+  console.log("Signing in before scrape… [scraper login logic: interactable-field detection]");
+  await navigateToUrl(page, signInUrl, portfolioUrl);
 
-  await page.type(emailSel, email, { delay: 50 });
-  await page.type(passwordSel, password, { delay: 50 });
-
-  const submit =
-    (await page.$('button[type="submit"]')) ||
-    (await page.$('input[type="submit"]'));
-  if (submit) {
-    await submit.click();
-  } else {
-    const buttons = await page.$$("button, [role='button']");
-    let clicked = false;
-    for (const btn of buttons) {
-      const text = await page.evaluate((el) => (el as HTMLElement).textContent?.toLowerCase() || "", btn);
-      if (text.includes("sign in")) {
-        await btn.click();
-        clicked = true;
-        break;
-      }
+  for (let step = 0; step < SIGN_IN_NAV_STEPS; step++) {
+    const here = pathnameNormalized(page.url());
+    let form = await detectLoginForm(page);
+    if (!form) {
+      await sleep(500);
+      form = await detectLoginForm(page);
     }
-    if (!clicked) throw new Error("Could not find Sign In submit button");
+
+    if (here === wantPath && !form) {
+      return;
+    }
+
+    if (form) {
+      await submitLoginCredentials(page, email, password, form.emailSel, form.passwordSel);
+      await navigateToUrl(page, portfolioUrl, portfolioUrl);
+      continue;
+    }
+
+    const atProfile = here === "/profile" || here.startsWith("/profile/");
+    const atSettings = here === "/settings" || here.startsWith("/settings/");
+    const atSignin = here.endsWith("/signin") || here.includes("/signin");
+
+    if (atProfile || atSettings) {
+      console.log(
+        `Wrong page for scrape (${page.url()}); navigating to portfolio ${portfolioUrl}`
+      );
+      await navigateToUrl(page, portfolioUrl, portfolioUrl);
+      continue;
+    }
+
+    if (!atSignin && here !== wantPath && here !== "") {
+      console.log(
+        `Unexpected path "${here}" (${page.url()}); navigating to portfolio ${portfolioUrl}`
+      );
+      await navigateToUrl(page, portfolioUrl, portfolioUrl);
+      continue;
+    }
+
+    if (atSignin) {
+      if (step % 2 === 1) {
+        console.log(
+          `Sign-in page has no usable login fields; opening portfolio (${page.url()}, step ${step + 1})`
+        );
+        await navigateToUrl(page, portfolioUrl, portfolioUrl);
+      } else {
+        console.log(`Reloading sign-in URL (step ${step + 1})`);
+        await navigateToUrl(page, signInUrl, portfolioUrl);
+      }
+      await sleep(800);
+      continue;
+    }
+
+    console.log(`Navigating to portfolio from ${page.url()} (step ${step + 1})`);
+    await navigateToUrl(page, portfolioUrl, portfolioUrl);
   }
 
-  await Promise.race([
-    page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }),
-    new Promise((_, rej) => setTimeout(() => rej(new Error("Login navigation timeout")), 15000)),
-  ]).catch(() => {
-    // Navigation might have completed already; continue
-  });
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  const last = page.url();
+  if (pathnameNormalized(last) !== wantPath) {
+    throw new Error(
+      `Could not land on portfolio path "${wantPath}" after ${SIGN_IN_NAV_STEPS} navigation steps (last URL: ${last})`
+    );
+  }
 }
 
 export async function scrapePortfolioData(
