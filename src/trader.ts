@@ -979,6 +979,13 @@ export async function executeTradesFromActions(
         continue;
       }
       const sharesToSell = Math.min(action.shares, position.longQuantity);
+      if (sharesToSell <= 0) {
+        summary.skipped.push({
+          symbol: action.symbol,
+          reason: "No shares to sell after scaling or empty position",
+        });
+        continue;
+      }
       const result = await placeSellOrder(
         portfolioId,
         action.symbol,

@@ -35,12 +35,16 @@ export interface Trade {
 /** INCREASE / rebalance adds map to BUY with buyKind "add"; new entries use "enter". */
 export type PortfolioBuyKind = "enter" | "add";
 
+/** Plain SELL is a full exit; DECREASE maps to "decrease" for proportional share scaling. */
+export type PortfolioSellKind = "exit" | "decrease";
+
 export interface PortfolioAction {
   symbol: string;
   action: "BUY" | "SELL";
   shares: number;
   price: number;
   buyKind?: PortfolioBuyKind;
+  sellKind?: PortfolioSellKind;
 }
 
 export interface ScrapedPortfolioData {

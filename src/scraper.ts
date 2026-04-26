@@ -338,6 +338,7 @@ export async function scrapePortfolioData(
           shares: number;
           price: number;
           buyKind?: "enter" | "add";
+          sellKind?: "exit" | "decrease";
         }> = [];
 
         const headings = Array.from(doc.querySelectorAll("h1, h2, h3, h4, caption, th"));
@@ -473,6 +474,12 @@ export async function scrapePortfolioData(
                     ? "add"
                     : "enter"
                   : undefined,
+              sellKind:
+                normalizedAction === "SELL"
+                  ? action === "DECREASE"
+                    ? "decrease"
+                    : "exit"
+                  : undefined,
             });
           } catch (err) {
             console.warn(`Error parsing row for ${symbolText}:`, err);
@@ -498,6 +505,12 @@ export async function scrapePortfolioData(
             ? a.buyKind === "add"
               ? "add"
               : "enter"
+            : undefined,
+        sellKind:
+          a.action === "SELL"
+            ? a.sellKind === "decrease"
+              ? "decrease"
+              : "exit"
             : undefined,
       }));
 

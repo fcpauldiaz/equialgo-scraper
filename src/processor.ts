@@ -73,6 +73,22 @@ export function scaleActionsToPortfolioSize(
   const allocationPerPosition =
     numBuys > 0 ? targetPortfolioSize / numBuys : targetPortfolioSize;
 
+  let decreaseShareScale = 1;
+  if (enterBuys.length > 0) {
+    let modelNotional = 0;
+    let scaledNotional = 0;
+    for (const a of enterBuys) {
+      if (a.price > 0 && a.shares > 0) {
+        modelNotional += a.shares * a.price;
+        const scaledShares = Math.max(1, Math.floor(allocationPerPosition / a.price));
+        scaledNotional += scaledShares * a.price;
+      }
+    }
+    if (modelNotional > 0) {
+      decreaseShareScale = scaledNotional / modelNotional;
+    }
+  }
+
   return actions.map((action) => {
     if (action.action === "BUY" && action.buyKind === "add") {
       return { ...action };
@@ -83,6 +99,10 @@ export function scaleActionsToPortfolioSize(
           ? Math.max(1, Math.floor(allocationPerPosition / action.price))
           : 1;
       return { ...action, shares };
+    }
+    if (action.action === "SELL" && action.sellKind === "decrease") {
+      const scaled = Math.floor(action.shares * decreaseShareScale);
+      return { ...action, shares: Math.max(0, scaled) };
     }
     return { ...action };
   });
