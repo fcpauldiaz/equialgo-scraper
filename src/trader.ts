@@ -141,6 +141,20 @@ interface Position {
   marketValue?: number;
 }
 
+/**
+ * Schwab ties refresh (and code exchange) to the redirect_uri used when the refresh token was issued.
+ * Prefer the URI persisted with credentials so production env can differ from how the user authorized.
+ */
+function redirectUriForSchwabOAuth(
+  creds: { redirectUri?: string | null } | null | undefined
+): string {
+  const fromDb = creds?.redirectUri?.trim();
+  if (fromDb) return fromDb;
+  const fromEnv = process.env.SCHWAB_REDIRECT_URI?.trim();
+  if (fromEnv) return fromEnv;
+  return "http://127.0.0.1:8765/callback";
+}
+
 /** Enter / model BUY rows carry a target share count; buy only what is missing vs the account. */
 function buyGapToTargetShares(targetShares: number, heldLongShares: number): number {
   const target = Math.max(0, Math.floor(targetShares));
@@ -162,10 +176,7 @@ async function initializeSchwabClient(portfolioId: number): Promise<SchwabApiCli
       "Schwab credentials are required for this portfolio. Complete the Schwab OAuth login (UI or pnpm run schwab-login)."
     );
   }
-  const redirectUri =
-    process.env.SCHWAB_REDIRECT_URI ||
-    credentialsFromDb.redirectUri ||
-    "http://127.0.0.1:8765/callback";
+  const redirectUri = redirectUriForSchwabOAuth(credentialsFromDb);
 
   if (!clientId || !clientSecret) {
     throw new Error(
@@ -228,10 +239,7 @@ async function refreshTokensIfNeeded(portfolioId: number): Promise<TokenData> {
 
   const schwabApi = await getSchwabApiModule();
   const { createSchwabAuth } = schwabApi;
-  const redirectUri =
-    process.env.SCHWAB_REDIRECT_URI ??
-    creds?.redirectUri ??
-    "http://127.0.0.1:8765/callback";
+  const redirectUri = redirectUriForSchwabOAuth(creds);
 
   const auth = createSchwabAuth({
     oauthConfig: {

@@ -21,6 +21,29 @@ import { DAILY_CHECK_TIMEZONE, runCheckForPortfolio } from "./run-check";
 
 const UI_PORT = parseInt(process.env.UI_PORT || "3000", 10);
 
+function normalizeIncomingPathname(p: string): string {
+  if (p.length > 1 && p.endsWith("/")) {
+    return p.slice(0, -1);
+  }
+  return p;
+}
+
+/** Path this Node process sees for GET /callback from Schwab (may differ from SCHWAB_REDIRECT_URI path behind a reverse proxy). */
+function schwabIncomingCallbackPathname(): string | null {
+  const override = process.env.SCHWAB_CALLBACK_INCOMING_PATH?.trim();
+  if (override) {
+    const withSlash = override.startsWith("/") ? override : `/${override}`;
+    return normalizeIncomingPathname(withSlash);
+  }
+  const schwabRedirectUri = process.env.SCHWAB_REDIRECT_URI?.trim();
+  if (!schwabRedirectUri) return null;
+  try {
+    return normalizeIncomingPathname(new URL(schwabRedirectUri).pathname);
+  } catch {
+    return null;
+  }
+}
+
 const UI_DIST = path.join(__dirname, "..", "ui", "dist");
 
 const MIME: Record<string, string> = {
@@ -164,19 +187,10 @@ export function startUiServer(): http.Server {
       return;
     }
 
-    const schwabRedirectUri = process.env.SCHWAB_REDIRECT_URI?.trim();
-    const schwabCallbackPath =
-      schwabRedirectUri &&
-      (() => {
-        try {
-          return new URL(schwabRedirectUri).pathname;
-        } catch {
-          return null;
-        }
-      })();
+    const schwabCallbackPath = schwabIncomingCallbackPathname();
     if (
       schwabCallbackPath &&
-      pathname === schwabCallbackPath &&
+      normalizeIncomingPathname(pathname) === schwabCallbackPath &&
       method === "GET"
     ) {
       try {
