@@ -74,44 +74,75 @@ export function scaleActionsToPortfolioSize(
   const allocationPerPosition =
     numBuys > 0 ? targetPortfolioSize / numBuys : targetPortfolioSize;
 
-  let rebalanceShareScale = 1;
-  if (allBuys.length > 0) {
-    let modelNotional = 0;
-    let scaledNotional = 0;
-    for (const a of allBuys) {
-      if (a.price > 0 && a.shares > 0) {
-        modelNotional += a.shares * a.price;
-        const scaledShares =
-          a.buyKind === "add"
-            ? Math.max(0, Math.floor(a.shares))
-            : Math.max(1, Math.floor(allocationPerPosition / a.price));
-        scaledNotional += scaledShares * a.price;
-      }
-    }
-    if (modelNotional > 0) {
-      if (enterBuys.length > 0) {
-        rebalanceShareScale = scaledNotional / modelNotional;
-      } else {
-        rebalanceShareScale = targetPortfolioSize / modelNotional;
-      }
+  let modelNotional = 0;
+  let proxyScaledBuyNotional = 0;
+  for (const a of allBuys) {
+    if (a.price > 0 && a.shares > 0) {
+      modelNotional += a.shares * a.price;
+      const scaledShares =
+        a.buyKind === "add"
+          ? Math.max(0, Math.floor(a.shares))
+          : Math.max(1, Math.floor(allocationPerPosition / a.price));
+      proxyScaledBuyNotional += scaledShares * a.price;
     }
   }
 
+  let rebalanceShareScale = 1;
+  if (allBuys.length > 0 && modelNotional > 0) {
+    if (enterBuys.length > 0) {
+      rebalanceShareScale = proxyScaledBuyNotional / modelNotional;
+    } else {
+      rebalanceShareScale = targetPortfolioSize / modelNotional;
+    }
+  }
+
+  const scaleMode =
+    allBuys.length === 0
+      ? "no_buys"
+      : enterBuys.length > 0
+        ? "scale_from_enter_proxy"
+        : "scale_target_over_model_notional";
+
+  console.log(
+    `[scale] targetPortfolioSize=$${targetPortfolioSize.toFixed(2)} enterBuyRows=${enterBuys.length} ` +
+      `allBuyRows=${allBuys.length} allocationPerEnter=$${allocationPerPosition.toFixed(2)} ` +
+      `modelBuyNotional=$${modelNotional.toFixed(2)} proxyScaledBuyNotional=$${proxyScaledBuyNotional.toFixed(2)} ` +
+      `rebalanceShareScale=${rebalanceShareScale.toFixed(8)} mode=${scaleMode}`
+  );
+
   return actions.map((action) => {
+    const rawShares = action.shares;
     if (action.action === "BUY" && action.buyKind === "add") {
       const scaled = Math.floor(action.shares * rebalanceShareScale);
-      return { ...action, shares: Math.max(0, scaled) };
+      const out = Math.max(0, scaled);
+      console.log(
+        `[scale] ${action.symbol} INCREASE: floor(${rawShares} × ${rebalanceShareScale.toFixed(8)}) → ${out} sh @ $${action.price.toFixed(2)}`
+      );
+      return { ...action, shares: out };
     }
     if (action.action === "BUY") {
       const shares =
         action.price > 0
           ? Math.max(1, Math.floor(allocationPerPosition / action.price))
           : 1;
+      console.log(
+        `[scale] ${action.symbol} ENTER: max(1, floor($${allocationPerPosition.toFixed(2)} / $${action.price.toFixed(2)})) → ${shares} sh (scraped ${rawShares} sh)`
+      );
       return { ...action, shares };
     }
     if (action.action === "SELL" && action.sellKind === "decrease") {
       const scaled = Math.floor(action.shares * rebalanceShareScale);
-      return { ...action, shares: Math.max(0, scaled) };
+      const out = Math.max(0, scaled);
+      console.log(
+        `[scale] ${action.symbol} DECREASE: floor(${rawShares} × ${rebalanceShareScale.toFixed(8)}) → ${out} sh @ $${action.price.toFixed(2)}`
+      );
+      return { ...action, shares: out };
+    }
+    if (action.action === "SELL") {
+      console.log(
+        `[scale] ${action.symbol} SELL exit: ${rawShares} sh @ $${action.price.toFixed(2)} (no share scaling; execution uses min(signal, held))`
+      );
+      return { ...action };
     }
     return { ...action };
   });
