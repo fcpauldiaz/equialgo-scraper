@@ -69,23 +69,31 @@ export function scaleActionsToPortfolioSize(
   const enterBuys = actions.filter(
     (a) => a.action === "BUY" && a.buyKind !== "add"
   );
+  const allBuys = actions.filter((a) => a.action === "BUY");
   const numBuys = enterBuys.length;
   const allocationPerPosition =
     numBuys > 0 ? targetPortfolioSize / numBuys : targetPortfolioSize;
 
   let rebalanceShareScale = 1;
-  if (enterBuys.length > 0) {
+  if (allBuys.length > 0) {
     let modelNotional = 0;
     let scaledNotional = 0;
-    for (const a of enterBuys) {
+    for (const a of allBuys) {
       if (a.price > 0 && a.shares > 0) {
         modelNotional += a.shares * a.price;
-        const scaledShares = Math.max(1, Math.floor(allocationPerPosition / a.price));
+        const scaledShares =
+          a.buyKind === "add"
+            ? Math.max(0, Math.floor(a.shares))
+            : Math.max(1, Math.floor(allocationPerPosition / a.price));
         scaledNotional += scaledShares * a.price;
       }
     }
     if (modelNotional > 0) {
-      rebalanceShareScale = scaledNotional / modelNotional;
+      if (enterBuys.length > 0) {
+        rebalanceShareScale = scaledNotional / modelNotional;
+      } else {
+        rebalanceShareScale = targetPortfolioSize / modelNotional;
+      }
     }
   }
 

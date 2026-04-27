@@ -181,6 +181,15 @@ interface TradierPositionsResponse {
   positions?: null | { position?: TradierPositionItem | TradierPositionItem[] };
 }
 
+interface TradierBalancesResponse {
+  balances?: {
+    total_equity?: number | string;
+    equity?: number | string;
+    total_market_value?: number | string;
+    market_value?: number | string;
+  };
+}
+
 export interface TradierPosition {
   symbol: string;
   longQuantity: number;
@@ -215,6 +224,36 @@ export async function getTradierPositions(
     }
   }
   return out;
+}
+
+export async function getTradierAccountExposure(
+  apiKey: string,
+  accountId: string,
+  sandbox: boolean
+): Promise<number | null> {
+  const res = await tradierFetch(
+    apiKey,
+    sandbox,
+    `/v1/accounts/${encodeURIComponent(accountId)}/balances`
+  );
+  if (!res.ok) {
+    return null;
+  }
+  const data = (await res.json()) as TradierBalancesResponse;
+  const balances = data.balances;
+  if (!balances) {
+    return null;
+  }
+  const candidate =
+    balances.total_equity ??
+    balances.equity ??
+    balances.total_market_value ??
+    balances.market_value;
+  const parsed = Number(candidate);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
 }
 
 interface TradierOrderResponse {

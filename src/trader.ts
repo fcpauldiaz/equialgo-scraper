@@ -8,6 +8,7 @@ import {
 } from "./state";
 import {
   getTradierAccountId,
+  getTradierAccountExposure,
   getTradierPositions,
   placeTradierOrder,
 } from "./tradier-client";
@@ -46,6 +47,10 @@ const TRADIER_ORDER_TYPE = (process.env.TRADIER_ORDER_TYPE || "market") as "mark
 const SCHWAB_API_BASE_URL =
   process.env.SCHWAB_API_BASE_URL ?? "https://api.schwabapi.com";
 const SCHWAB_PLACE_ORDER_PATH = "/trader/v1/accounts/{accountNumber}/orders";
+const PORTFOLIO_SIZE_CAP = Math.max(
+  0,
+  parseInt(process.env.PORTFOLIO_SIZE || "10000", 10)
+);
 
 const schwabClientByPortfolio = new Map<number, SchwabApiClient>();
 const accountHashByPortfolio = new Map<number, string>();
@@ -432,6 +437,33 @@ async function getCurrentPositions(
   }
 
   return positionsMap;
+}
+
+async function getCurrentPortfolioExposureValue(
+  portfolioId: number,
+  positions: Map<string, Position>
+): Promise<number | null> {
+  const brokerage = await getPortfolioBrokerage(portfolioId);
+  if (brokerage === "tradier") {
+    const creds = await readTradierCredentials(portfolioId);
+    if (!creds) {
+      return null;
+    }
+    const accountId = await resolveTradierAccountId(portfolioId, creds);
+    return getTradierAccountExposure(creds.apiKey, accountId, creds.sandbox);
+  }
+  if (brokerage === "schwab") {
+    let total = 0;
+    let hasAnyMarketValue = false;
+    for (const p of positions.values()) {
+      if (typeof p.marketValue === "number" && Number.isFinite(p.marketValue)) {
+        total += Math.max(0, p.marketValue);
+        hasAnyMarketValue = true;
+      }
+    }
+    return hasAnyMarketValue ? total : null;
+  }
+  return null;
 }
 
 export type VerifyConnectionResult = {
@@ -975,6 +1007,20 @@ export async function executeTradesFromActions(
   }
 
   console.log(`Executing ${actions.length} trades from scraped actions (portfolio ${portfolioId})...`);
+  let remainingBuyBudget = Number.POSITIVE_INFINITY;
+  if (PORTFOLIO_SIZE_CAP > 0) {
+    const currentExposure = await getCurrentPortfolioExposureValue(portfolioId, positions);
+    if (currentExposure != null) {
+      remainingBuyBudget = Math.max(0, PORTFOLIO_SIZE_CAP - currentExposure);
+      console.log(
+        `Portfolio ${portfolioId} exposure: $${currentExposure.toFixed(2)} / cap $${PORTFOLIO_SIZE_CAP.toFixed(2)}; remaining buy budget $${remainingBuyBudget.toFixed(2)}`
+      );
+    } else {
+      console.log(
+        `Portfolio ${portfolioId} exposure unavailable; running without total-portfolio budget cap`
+      );
+    }
+  }
 
   for (const action of actions) {
     if (action.action === "SELL") {
@@ -986,7 +1032,14 @@ export async function executeTradesFromActions(
         });
         continue;
       }
-      const sharesToSell = Math.min(action.shares, position.longQuantity);
+      const held = position.longQuantity;
+      const sharesToSell = Math.min(action.shares, held);
+      const sellKind = action.sellKind ?? "exit";
+      if (sellKind === "decrease" && action.shares >= held) {
+        console.log(
+          `${action.symbol}: DECREASE requested ${action.shares} sh ≥ held ${held} → selling full position (${sharesToSell} sh); strategy trim is larger than your position`
+        );
+      }
       if (sharesToSell <= 0) {
         summary.skipped.push({
           symbol: action.symbol,
@@ -1003,7 +1056,7 @@ export async function executeTradesFromActions(
       if (result.success) {
         summary.successful.push(result);
         console.log(
-          `✓ SELL order placed: ${action.symbol} - ${sharesToSell} shares @ $${action.price.toFixed(2)}`
+          `✓ SELL order placed: ${action.symbol} (${sellKind}) - ${sharesToSell} shares @ $${action.price.toFixed(2)} (held ${held}, signal ${action.shares})`
         );
       } else {
         summary.failed.push(result);
@@ -1047,9 +1100,22 @@ export async function executeTradesFromActions(
       continue;
     }
 
+    if (Number.isFinite(remainingBuyBudget) && action.price > 0) {
+      const budgetShares = Math.floor(remainingBuyBudget / action.price);
+      sharesToBuy = Math.min(sharesToBuy, Math.max(0, budgetShares));
+    }
+
     console.log(
       `${action.symbol}: BUY ${isAdd ? "add" : "enter"} → ${sharesToBuy} sh (held ${held}, signal ${action.shares})`
     );
+
+    if (sharesToBuy <= 0) {
+      summary.skipped.push({
+        symbol: action.symbol,
+        reason: "No remaining portfolio budget for buy",
+      });
+      continue;
+    }
 
     const result = await placeBuyOrder(
       portfolioId,
@@ -1059,6 +1125,9 @@ export async function executeTradesFromActions(
     );
     if (result.success) {
       summary.successful.push(result);
+      if (Number.isFinite(remainingBuyBudget)) {
+        remainingBuyBudget = Math.max(0, remainingBuyBudget - sharesToBuy * action.price);
+      }
       positions.set(action.symbol, {
         symbol: action.symbol,
         longQuantity: held + sharesToBuy,
