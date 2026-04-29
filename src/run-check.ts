@@ -176,7 +176,9 @@ export async function runCheck(options: RunCheckOptions = {}): Promise<RunCheckR
 
       let tradeSummary;
       try {
-        tradeSummary = await executeTradesFromActions(scaledActions, portfolioId);
+        tradeSummary = await executeTradesFromActions(scaledActions, portfolioId, {
+          strategySlug: slug,
+        });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         encounteredErrors.push(

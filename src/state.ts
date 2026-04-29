@@ -216,6 +216,19 @@ async function copyLegacyGlobalScrapeStateIntoPortfolios(
   );
 }
 
+async function migratePortfolioStrategySymbolsTable(
+  db: ReturnType<typeof getClient>
+): Promise<void> {
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS portfolio_strategy_symbols (
+      portfolio_id INTEGER NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+      slug TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      PRIMARY KEY (portfolio_id, slug, symbol)
+    )
+  `);
+}
+
 async function migratePortfolioSystemtraderStrategiesTable(
   db: ReturnType<typeof getClient>
 ): Promise<void> {
@@ -353,6 +366,7 @@ export async function initializeDatabase(): Promise<void> {
     `);
 
     await migratePortfolioSystemtraderStrategiesTable(db);
+    await migratePortfolioStrategySymbolsTable(db);
 
     console.log("Database initialized successfully");
   } catch (error) {
@@ -390,6 +404,61 @@ export async function readJobStatistics(): Promise<JobStatisticsSnapshot> {
       portfolioUrlEnvOverride: isPortfolioUrlEnvOverride(),
     };
   }
+}
+
+export function normalizeTickerSymbol(symbol: string): string {
+  return symbol.trim().toUpperCase();
+}
+
+/** Symbols historically traded for this strategy on this portfolio (persisted). Used with merge/remove each run. */
+export async function loadStrategySleeveSymbols(
+  portfolioId: number,
+  slug: string
+): Promise<string[]> {
+  const db = getClient();
+  const normalized = parseAndNormalizeSystemTraderSlug(slug);
+  const res = await db.execute(
+    `SELECT symbol FROM portfolio_strategy_symbols
+     WHERE portfolio_id = ? AND lower(trim(slug)) = ?`,
+    [portfolioId, normalized]
+  );
+  return (res.rows as unknown as { symbol: string }[]).map((r) =>
+    normalizeTickerSymbol(String(r.symbol ?? ""))
+  );
+}
+
+export async function mergeStrategySleeveSymbols(
+  portfolioId: number,
+  slug: string,
+  symbols: readonly string[]
+): Promise<void> {
+  const db = getClient();
+  const normalizedSlug = parseAndNormalizeSystemTraderSlug(slug);
+  for (const raw of symbols) {
+    const sym = normalizeTickerSymbol(raw);
+    if (!sym) continue;
+    await db.execute(
+      `INSERT OR IGNORE INTO portfolio_strategy_symbols (portfolio_id, slug, symbol)
+       VALUES (?, ?, ?)`,
+      [portfolioId, normalizedSlug, sym]
+    );
+  }
+}
+
+export async function removeStrategySleeveSymbol(
+  portfolioId: number,
+  slug: string,
+  symbol: string
+): Promise<void> {
+  const db = getClient();
+  const normalizedSlug = parseAndNormalizeSystemTraderSlug(slug);
+  const sym = normalizeTickerSymbol(symbol);
+  if (!sym) return;
+  await db.execute(
+    `DELETE FROM portfolio_strategy_symbols
+     WHERE portfolio_id = ? AND lower(trim(slug)) = ? AND symbol = ?`,
+    [portfolioId, normalizedSlug, sym]
+  );
 }
 
 export async function writePortfolioProcessedState(

@@ -4,6 +4,11 @@ import {
   readTradierCredentials,
   writeTradierCredentials,
   getPortfolioBrokerage,
+  loadStrategySleeveSymbols,
+  mergeStrategySleeveSymbols,
+  normalizeTickerSymbol,
+  parseAndNormalizeSystemTraderSlug,
+  removeStrategySleeveSymbol,
   type SchwabCredentials,
 } from "./state";
 import {
@@ -47,10 +52,23 @@ const TRADIER_ORDER_TYPE = (process.env.TRADIER_ORDER_TYPE || "market") as "mark
 const SCHWAB_API_BASE_URL =
   process.env.SCHWAB_API_BASE_URL ?? "https://api.schwabapi.com";
 const SCHWAB_PLACE_ORDER_PATH = "/trader/v1/accounts/{accountNumber}/orders";
-const PORTFOLIO_SIZE_CAP = Math.max(
-  0,
-  parseInt(process.env.PORTFOLIO_SIZE || "10000", 10)
-);
+/**
+ * Max long equity exposure (sum of position market values) before new buys are clipped.
+ * - If `PORTFOLIO_EXPOSURE_CAP` is set: use it; `0` or negative disables enforcement.
+ * - If unset: legacy behavior — use `PORTFOLIO_SIZE` (same dollars as scaling target).
+ */
+function getPortfolioExposureCapDollars(): number | null {
+  const explicit = process.env.PORTFOLIO_EXPOSURE_CAP;
+  if (explicit !== undefined && String(explicit).trim() !== "") {
+    const n = parseInt(String(explicit), 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      return null;
+    }
+    return n;
+  }
+  const legacy = parseInt(process.env.PORTFOLIO_SIZE || "10000", 10);
+  return Number.isFinite(legacy) && legacy > 0 ? legacy : null;
+}
 
 const schwabClientByPortfolio = new Map<number, SchwabApiClient>();
 const accountHashByPortfolio = new Map<number, string>();
@@ -437,6 +455,48 @@ async function getCurrentPositions(
   }
 
   return positionsMap;
+}
+
+function priceHintsFromActions(actions: PortfolioAction[]): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const a of actions) {
+    const sym = normalizeTickerSymbol(a.symbol);
+    if (!sym || !(a.price > 0) || !Number.isFinite(a.price)) continue;
+    m.set(sym, a.price);
+  }
+  return m;
+}
+
+function positionsMapWithNormalizedKeys(
+  positions: Map<string, Position>
+): Map<string, Position> {
+  const out = new Map<string, Position>();
+  for (const [k, v] of positions) {
+    out.set(normalizeTickerSymbol(k), v);
+  }
+  return out;
+}
+
+/** Long equity notionally attributed to a strategy sleeve (Schwab: sum marketValue; Tradier: qty × action price when MV missing). */
+function sumStrategySleeveExposure(
+  positionsNorm: Map<string, Position>,
+  sleeveSymbols: ReadonlySet<string>,
+  priceHints: Map<string, number>
+): number {
+  let total = 0;
+  for (const sym of sleeveSymbols) {
+    const p = positionsNorm.get(sym);
+    if (!p || p.longQuantity <= 0) continue;
+    if (typeof p.marketValue === "number" && Number.isFinite(p.marketValue)) {
+      total += Math.max(0, p.marketValue);
+      continue;
+    }
+    const hint = priceHints.get(sym);
+    if (hint != null && hint > 0) {
+      total += p.longQuantity * hint;
+    }
+  }
+  return total;
 }
 
 async function getCurrentPortfolioExposureValue(
@@ -958,9 +1018,15 @@ export async function executeTrades(
   return summary;
 }
 
+export type ExecuteTradesFromActionsOptions = {
+  /** When set, exposure cap applies to this strategy's sleeve only (symbols tracked per portfolio + slug), not the whole account. */
+  strategySlug?: string;
+};
+
 export async function executeTradesFromActions(
   actions: PortfolioAction[],
-  portfolioId: number
+  portfolioId: number,
+  options?: ExecuteTradesFromActionsOptions
 ): Promise<TradeExecutionSummary> {
   const summary: TradeExecutionSummary = {
     successful: [],
@@ -987,6 +1053,11 @@ export async function executeTradesFromActions(
     return summary;
   }
 
+  const slugTrimmed = options?.strategySlug?.trim();
+  const strategySlugNormalized = slugTrimmed
+    ? parseAndNormalizeSystemTraderSlug(slugTrimmed)
+    : undefined;
+
   let positions: Map<string, Position>;
   try {
     positions = await getCurrentPositions(portfolioId);
@@ -1007,22 +1078,50 @@ export async function executeTradesFromActions(
   }
 
   console.log(`Executing ${actions.length} trades from scraped actions (portfolio ${portfolioId})...`);
+
+  const exposureCapDollars = getPortfolioExposureCapDollars();
   let remainingBuyBudget = Number.POSITIVE_INFINITY;
-  if (PORTFOLIO_SIZE_CAP > 0) {
-    const currentExposure = await getCurrentPortfolioExposureValue(portfolioId, positions);
-    if (currentExposure != null) {
-      remainingBuyBudget = Math.max(0, PORTFOLIO_SIZE_CAP - currentExposure);
+  const priceHints = priceHintsFromActions(actions);
+
+  if (exposureCapDollars != null) {
+    if (strategySlugNormalized) {
+      const dbSyms = await loadStrategySleeveSymbols(portfolioId, strategySlugNormalized);
+      const actionSyms = actions.map((a) => normalizeTickerSymbol(a.symbol)).filter(Boolean);
+      const sleeveSymbols = new Set<string>([...dbSyms, ...actionSyms]);
+      const positionsNorm = positionsMapWithNormalizedKeys(positions);
+      const sleeveExposure = sumStrategySleeveExposure(
+        positionsNorm,
+        sleeveSymbols,
+        priceHints
+      );
+      remainingBuyBudget = Math.max(0, exposureCapDollars - sleeveExposure);
       console.log(
-        `Portfolio ${portfolioId} exposure: $${currentExposure.toFixed(2)} / cap $${PORTFOLIO_SIZE_CAP.toFixed(2)}; remaining buy budget $${remainingBuyBudget.toFixed(2)}`
+        `Portfolio ${portfolioId} strategy "${strategySlugNormalized}" sleeve exposure: $${sleeveExposure.toFixed(2)} / cap $${exposureCapDollars.toFixed(2)}; remaining buy budget $${remainingBuyBudget.toFixed(2)} (${sleeveSymbols.size} symbol(s) in sleeve)`
       );
     } else {
-      console.log(
-        `Portfolio ${portfolioId} exposure unavailable; running without total-portfolio budget cap`
-      );
+      const currentExposure = await getCurrentPortfolioExposureValue(portfolioId, positions);
+      if (currentExposure != null) {
+        remainingBuyBudget = Math.max(0, exposureCapDollars - currentExposure);
+        console.log(
+          `Portfolio ${portfolioId} exposure: $${currentExposure.toFixed(2)} / cap $${exposureCapDollars.toFixed(2)}; remaining buy budget $${remainingBuyBudget.toFixed(2)}`
+        );
+      } else {
+        console.log(
+          `Portfolio ${portfolioId} exposure unavailable; running without total-portfolio budget cap`
+        );
+        remainingBuyBudget = Number.POSITIVE_INFINITY;
+      }
     }
   }
 
-  for (const action of actions) {
+  const sleeveFullExitSymbols = new Set<string>();
+
+  const orderedActions = [
+    ...actions.filter((a) => a.action === "SELL"),
+    ...actions.filter((a) => a.action === "BUY"),
+  ];
+
+  for (const action of orderedActions) {
     if (action.action === "SELL") {
       const position = positions.get(action.symbol);
       if (!position || position.longQuantity <= 0) {
@@ -1055,6 +1154,27 @@ export async function executeTradesFromActions(
       );
       if (result.success) {
         summary.successful.push(result);
+        if (Number.isFinite(remainingBuyBudget) && action.price > 0) {
+          remainingBuyBudget += sharesToSell * action.price;
+        }
+        const newLong = held - sharesToSell;
+        if (newLong <= 0) {
+          positions.delete(action.symbol);
+          if (strategySlugNormalized) {
+            sleeveFullExitSymbols.add(normalizeTickerSymbol(action.symbol));
+          }
+        } else {
+          const prevMv = position.marketValue;
+          const scaledMv =
+            typeof prevMv === "number" && held > 0
+              ? Math.max(0, (prevMv * newLong) / held)
+              : undefined;
+          positions.set(action.symbol, {
+            ...position,
+            longQuantity: newLong,
+            ...(scaledMv !== undefined ? { marketValue: scaledMv } : {}),
+          });
+        }
         console.log(
           `✓ SELL order placed: ${action.symbol} (${sellKind}) - ${sharesToSell} shares @ $${action.price.toFixed(2)} (held ${held}, signal ${action.shares})`
         );
@@ -1070,14 +1190,10 @@ export async function executeTradesFromActions(
     const isAdd = action.buyKind === "add";
 
     if (action.shares <= 0) {
-      const bad = await placeBuyOrder(
-        portfolioId,
-        action.symbol,
-        action.shares,
-        action.price
-      );
-      summary.failed.push(bad);
-      console.error(`✗ BUY order failed: ${action.symbol} - ${bad.error}`);
+      summary.skipped.push({
+        symbol: action.symbol,
+        reason: "Zero shares after scaling (no order)",
+      });
       continue;
     }
 
@@ -1139,6 +1255,24 @@ export async function executeTradesFromActions(
     } else {
       summary.failed.push(result);
       console.error(`✗ BUY order failed: ${action.symbol} - ${result.error}`);
+    }
+  }
+
+  if (strategySlugNormalized) {
+    const symbolsFromActions = [
+      ...new Set(actions.map((a) => normalizeTickerSymbol(a.symbol))),
+    ].filter(Boolean);
+    try {
+      await mergeStrategySleeveSymbols(portfolioId, strategySlugNormalized, symbolsFromActions);
+      for (const sym of sleeveFullExitSymbols) {
+        await removeStrategySleeveSymbol(portfolioId, strategySlugNormalized, sym);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(
+        `Portfolio ${portfolioId}: could not persist strategy sleeve symbols for "${strategySlugNormalized}":`,
+        msg
+      );
     }
   }
 
