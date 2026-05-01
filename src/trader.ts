@@ -185,6 +185,76 @@ function buyGapToTargetShares(targetShares: number, heldLongShares: number): num
   return Math.max(0, target - held);
 }
 
+/**
+ * Split a finite buy budget across legs so each gets the same fractional haircut vs its ideal size
+ * (rebalance-friendly); avoids starving later symbols when sequential clipping was used before.
+ */
+function proportionalBuySharesUnderBudget(
+  idealShares: readonly number[],
+  prices: readonly number[],
+  budget: number
+): number[] {
+  const n = idealShares.length;
+  if (n === 0) return [];
+  let totalIdealNotional = 0;
+  for (let i = 0; i < n; i++) {
+    totalIdealNotional += idealShares[i] * prices[i];
+  }
+  if (totalIdealNotional <= 0) return Array(n).fill(0);
+  if (!Number.isFinite(budget) || budget <= 0) return Array(n).fill(0);
+  if (budget + 1e-6 >= totalIdealNotional) return [...idealShares];
+
+  const k = budget / totalIdealNotional;
+  type Row = { shares: number; frac: number; price: number; ideal: number };
+  const rows: Row[] = [];
+  for (let i = 0; i < n; i++) {
+    const raw = idealShares[i] * k;
+    const fl = Math.floor(raw);
+    rows.push({
+      shares: fl,
+      frac: raw - fl,
+      price: prices[i],
+      ideal: idealShares[i],
+    });
+  }
+
+  let spent = rows.reduce((s, r) => s + r.shares * r.price, 0);
+  let remaining = budget - spent;
+
+  const order = rows.map((_, i) => i).sort((a, b) => rows[b].frac - rows[a].frac);
+  for (const i of order) {
+    if (remaining + 1e-9 >= rows[i].price && rows[i].shares < rows[i].ideal) {
+      rows[i].shares += 1;
+      remaining -= rows[i].price;
+    }
+  }
+
+  while (true) {
+    let best = -1;
+    let bestPrice = Infinity;
+    for (let i = 0; i < n; i++) {
+      if (rows[i].shares >= rows[i].ideal) continue;
+      const p = rows[i].price;
+      if (p <= remaining + 1e-9 && p < bestPrice) {
+        bestPrice = p;
+        best = i;
+      }
+    }
+    if (best < 0) break;
+    rows[best].shares += 1;
+    remaining -= bestPrice;
+  }
+
+  return rows.map((r) => r.shares);
+}
+
+type IdealBuyLeg = {
+  action: PortfolioAction;
+  idealShares: number;
+  held: number;
+  existing: Position | undefined;
+};
+
 async function initializeSchwabClient(portfolioId: number): Promise<SchwabApiClient> {
   const cached = schwabClientByPortfolio.get(portfolioId);
   if (cached) {
@@ -1122,68 +1192,72 @@ export async function executeTradesFromActions(
   ];
 
   for (const action of orderedActions) {
-    if (action.action === "SELL") {
-      const position = positions.get(action.symbol);
-      if (!position || position.longQuantity <= 0) {
-        summary.skipped.push({
-          symbol: action.symbol,
-          reason: "No position to exit",
-        });
-        continue;
-      }
-      const held = position.longQuantity;
-      const sharesToSell = Math.min(action.shares, held);
-      const sellKind = action.sellKind ?? "exit";
-      if (sellKind === "decrease" && action.shares >= held) {
-        console.log(
-          `${action.symbol}: DECREASE requested ${action.shares} sh ≥ held ${held} → selling full position (${sharesToSell} sh); strategy trim is larger than your position`
-        );
-      }
-      if (sharesToSell <= 0) {
-        summary.skipped.push({
-          symbol: action.symbol,
-          reason: "No shares to sell after scaling or empty position",
-        });
-        continue;
-      }
-      const result = await placeSellOrder(
-        portfolioId,
-        action.symbol,
-        sharesToSell,
-        action.price
-      );
-      if (result.success) {
-        summary.successful.push(result);
-        if (Number.isFinite(remainingBuyBudget) && action.price > 0) {
-          remainingBuyBudget += sharesToSell * action.price;
-        }
-        const newLong = held - sharesToSell;
-        if (newLong <= 0) {
-          positions.delete(action.symbol);
-          if (strategySlugNormalized) {
-            sleeveFullExitSymbols.add(normalizeTickerSymbol(action.symbol));
-          }
-        } else {
-          const prevMv = position.marketValue;
-          const scaledMv =
-            typeof prevMv === "number" && held > 0
-              ? Math.max(0, (prevMv * newLong) / held)
-              : undefined;
-          positions.set(action.symbol, {
-            ...position,
-            longQuantity: newLong,
-            ...(scaledMv !== undefined ? { marketValue: scaledMv } : {}),
-          });
-        }
-        console.log(
-          `✓ SELL order placed: ${action.symbol} (${sellKind}) - ${sharesToSell} shares @ $${action.price.toFixed(2)} (held ${held}, signal ${action.shares})`
-        );
-      } else {
-        summary.failed.push(result);
-        console.error(`✗ SELL order failed: ${action.symbol} - ${result.error}`);
-      }
+    if (action.action !== "SELL") continue;
+
+    const position = positions.get(action.symbol);
+    if (!position || position.longQuantity <= 0) {
+      summary.skipped.push({
+        symbol: action.symbol,
+        reason: "No position to exit",
+      });
       continue;
     }
+    const held = position.longQuantity;
+    const sharesToSell = Math.min(action.shares, held);
+    const sellKind = action.sellKind ?? "exit";
+    if (sellKind === "decrease" && action.shares >= held) {
+      console.log(
+        `${action.symbol}: DECREASE requested ${action.shares} sh ≥ held ${held} → selling full position (${sharesToSell} sh); strategy trim is larger than your position`
+      );
+    }
+    if (sharesToSell <= 0) {
+      summary.skipped.push({
+        symbol: action.symbol,
+        reason: "No shares to sell after scaling or empty position",
+      });
+      continue;
+    }
+    const result = await placeSellOrder(
+      portfolioId,
+      action.symbol,
+      sharesToSell,
+      action.price
+    );
+    if (result.success) {
+      summary.successful.push(result);
+      if (Number.isFinite(remainingBuyBudget) && action.price > 0) {
+        remainingBuyBudget += sharesToSell * action.price;
+      }
+      const newLong = held - sharesToSell;
+      if (newLong <= 0) {
+        positions.delete(action.symbol);
+        if (strategySlugNormalized) {
+          sleeveFullExitSymbols.add(normalizeTickerSymbol(action.symbol));
+        }
+      } else {
+        const prevMv = position.marketValue;
+        const scaledMv =
+          typeof prevMv === "number" && held > 0
+            ? Math.max(0, (prevMv * newLong) / held)
+            : undefined;
+        positions.set(action.symbol, {
+          ...position,
+          longQuantity: newLong,
+          ...(scaledMv !== undefined ? { marketValue: scaledMv } : {}),
+        });
+      }
+      console.log(
+        `✓ SELL order placed: ${action.symbol} (${sellKind}) - ${sharesToSell} shares @ $${action.price.toFixed(2)} (held ${held}, signal ${action.shares})`
+      );
+    } else {
+      summary.failed.push(result);
+      console.error(`✗ SELL order failed: ${action.symbol} - ${result.error}`);
+    }
+  }
+
+  const idealBuyLegs: IdealBuyLeg[] = [];
+  for (const action of orderedActions) {
+    if (action.action !== "BUY") continue;
 
     const existing = positions.get(action.symbol);
     const held = existing?.longQuantity ?? 0;
@@ -1197,14 +1271,14 @@ export async function executeTradesFromActions(
       continue;
     }
 
-    let sharesToBuy: number;
+    let idealShares: number;
     if (isAdd) {
-      sharesToBuy = Math.floor(action.shares);
+      idealShares = Math.floor(action.shares);
     } else {
-      sharesToBuy = buyGapToTargetShares(action.shares, held);
+      idealShares = buyGapToTargetShares(action.shares, held);
     }
 
-    if (sharesToBuy <= 0) {
+    if (idealShares <= 0) {
       summary.skipped.push({
         symbol: action.symbol,
         reason: isAdd
@@ -1216,19 +1290,50 @@ export async function executeTradesFromActions(
       continue;
     }
 
-    if (Number.isFinite(remainingBuyBudget) && action.price > 0) {
-      const budgetShares = Math.floor(remainingBuyBudget / action.price);
-      sharesToBuy = Math.min(sharesToBuy, Math.max(0, budgetShares));
+    if (!(action.price > 0) || !Number.isFinite(action.price)) {
+      summary.skipped.push({
+        symbol: action.symbol,
+        reason: "Invalid or missing price for buy",
+      });
+      continue;
     }
 
+    idealBuyLegs.push({ action, idealShares, held, existing });
+  }
+
+  let proportionalAllocated: number[] | null = null;
+  if (Number.isFinite(remainingBuyBudget) && idealBuyLegs.length > 0) {
+    const ideals = idealBuyLegs.map((l) => l.idealShares);
+    const prices = idealBuyLegs.map((l) => l.action.price);
+    const totalDesired = ideals.reduce((s, sh, i) => s + sh * prices[i], 0);
+    if (totalDesired > remainingBuyBudget + 1e-6) {
+      proportionalAllocated = proportionalBuySharesUnderBudget(
+        ideals,
+        prices,
+        remainingBuyBudget
+      );
+      console.log(
+        `[budget] Proportional buy allocation: desired $${totalDesired.toFixed(2)} > budget $${remainingBuyBudget.toFixed(2)} (${idealBuyLegs.length} leg(s))`
+      );
+    }
+  }
+
+  for (let i = 0; i < idealBuyLegs.length; i++) {
+    const { action, idealShares, held, existing } = idealBuyLegs[i];
+    const isAdd = action.buyKind === "add";
+    const sharesToBuy =
+      proportionalAllocated != null ? proportionalAllocated[i]! : idealShares;
+
     console.log(
-      `${action.symbol}: BUY ${isAdd ? "add" : "enter"} → ${sharesToBuy} sh (held ${held}, signal ${action.shares})`
+      `${action.symbol}: BUY ${isAdd ? "add" : "enter"} → ${sharesToBuy} sh (held ${held}, signal ${action.shares}${proportionalAllocated ? `, ideal ${idealShares}` : ""})`
     );
 
     if (sharesToBuy <= 0) {
       summary.skipped.push({
         symbol: action.symbol,
-        reason: "No remaining portfolio budget for buy",
+        reason: proportionalAllocated
+          ? "No shares allocated under proportional sleeve budget"
+          : "No remaining portfolio budget for buy",
       });
       continue;
     }
