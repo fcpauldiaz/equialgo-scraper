@@ -1203,13 +1203,27 @@ export async function executeTradesFromActions(
       continue;
     }
     const held = position.longQuantity;
-    const sharesToSell = Math.min(action.shares, held);
     const sellKind = action.sellKind ?? "exit";
-    if (sellKind === "decrease" && action.shares >= held) {
-      console.log(
-        `${action.symbol}: DECREASE requested ${action.shares} sh ≥ held ${held} → selling full position (${sharesToSell} sh); strategy trim is larger than your position`
-      );
+    let sharesToSell = Math.min(action.shares, held);
+
+    if (sellKind === "decrease") {
+      if (held <= 1) {
+        summary.skipped.push({
+          symbol: action.symbol,
+          reason: "DECREASE cannot leave a partial position (only 1 share held)",
+        });
+        continue;
+      }
+      const maxDecreaseShares = held - 1;
+      if (sharesToSell > maxDecreaseShares) {
+        console.log(
+          `${action.symbol}: DECREASE capped ${sharesToSell} → ${maxDecreaseShares} sh ` +
+            `(must leave ≥1 share; requested ${action.shares} vs held ${held})`
+        );
+        sharesToSell = maxDecreaseShares;
+      }
     }
+
     if (sharesToSell <= 0) {
       summary.skipped.push({
         symbol: action.symbol,
