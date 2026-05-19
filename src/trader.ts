@@ -185,6 +185,38 @@ function buyGapToTargetShares(targetShares: number, heldLongShares: number): num
   return Math.max(0, target - held);
 }
 
+function targetSharesFromAction(action: PortfolioAction): number {
+  return Math.max(0, Math.floor(action.shares));
+}
+
+/** Full exit sells all held shares; otherwise sell down to the target position size. */
+function sellSharesToReachTarget(
+  heldLongShares: number,
+  targetShares: number,
+  isFullExit: boolean
+): number {
+  const held = Math.max(0, Math.floor(heldLongShares));
+  if (held <= 0) return 0;
+  if (isFullExit) return held;
+  const target = Math.max(0, Math.floor(targetShares));
+  return Math.max(0, held - target);
+}
+
+function refreshStrategySleeveBuyBudget(
+  exposureCapDollars: number,
+  positions: Map<string, Position>,
+  sleeveSymbols: ReadonlySet<string>,
+  priceHints: Map<string, number>
+): number {
+  const positionsNorm = positionsMapWithNormalizedKeys(positions);
+  const sleeveExposure = sumStrategySleeveExposure(
+    positionsNorm,
+    sleeveSymbols,
+    priceHints
+  );
+  return Math.max(0, exposureCapDollars - sleeveExposure);
+}
+
 /**
  * Split a finite buy budget across legs so each gets the same fractional haircut vs its ideal size
  * (rebalance-friendly); avoids starving later symbols when sequential clipping was used before.
@@ -1147,27 +1179,42 @@ export async function executeTradesFromActions(
     return summary;
   }
 
+  const useTargetRebalance = Boolean(strategySlugNormalized);
+  if (useTargetRebalance) {
+    console.log(
+      `Portfolio ${portfolioId}: target-rebalance mode for strategy "${strategySlugNormalized}" (scaled shares = target position sizes)`
+    );
+  }
+
   console.log(`Executing ${actions.length} trades from scraped actions (portfolio ${portfolioId})...`);
 
   const exposureCapDollars = getPortfolioExposureCapDollars();
   let remainingBuyBudget = Number.POSITIVE_INFINITY;
   const priceHints = priceHintsFromActions(actions);
+  let sleeveSymbolsForCap: Set<string> | null = null;
 
   if (exposureCapDollars != null) {
     if (strategySlugNormalized) {
       const dbSyms = await loadStrategySleeveSymbols(portfolioId, strategySlugNormalized);
       const actionSyms = actions.map((a) => normalizeTickerSymbol(a.symbol)).filter(Boolean);
-      const sleeveSymbols = new Set<string>([...dbSyms, ...actionSyms]);
+      sleeveSymbolsForCap = new Set<string>([...dbSyms, ...actionSyms]);
       const positionsNorm = positionsMapWithNormalizedKeys(positions);
       const sleeveExposure = sumStrategySleeveExposure(
         positionsNorm,
-        sleeveSymbols,
+        sleeveSymbolsForCap,
         priceHints
       );
-      remainingBuyBudget = Math.max(0, exposureCapDollars - sleeveExposure);
-      console.log(
-        `Portfolio ${portfolioId} strategy "${strategySlugNormalized}" sleeve exposure: $${sleeveExposure.toFixed(2)} / cap $${exposureCapDollars.toFixed(2)}; remaining buy budget $${remainingBuyBudget.toFixed(2)} (${sleeveSymbols.size} symbol(s) in sleeve)`
-      );
+      if (useTargetRebalance) {
+        remainingBuyBudget = Number.POSITIVE_INFINITY;
+        console.log(
+          `Portfolio ${portfolioId} strategy "${strategySlugNormalized}" sleeve exposure (pre-rebalance): $${sleeveExposure.toFixed(2)} / cap $${exposureCapDollars.toFixed(2)}; buy budget applied after sells (${sleeveSymbolsForCap.size} symbol(s) in sleeve)`
+        );
+      } else {
+        remainingBuyBudget = Math.max(0, exposureCapDollars - sleeveExposure);
+        console.log(
+          `Portfolio ${portfolioId} strategy "${strategySlugNormalized}" sleeve exposure: $${sleeveExposure.toFixed(2)} / cap $${exposureCapDollars.toFixed(2)}; remaining buy budget $${remainingBuyBudget.toFixed(2)} (${sleeveSymbolsForCap.size} symbol(s) in sleeve)`
+        );
+      }
     } else {
       const currentExposure = await getCurrentPortfolioExposureValue(portfolioId, positions);
       if (currentExposure != null) {
@@ -1204,32 +1251,51 @@ export async function executeTradesFromActions(
     }
     const held = position.longQuantity;
     const sellKind = action.sellKind ?? "exit";
-    let sharesToSell = Math.min(action.shares, held);
+    const isFullExit = sellKind === "exit";
+    let sharesToSell: number;
 
-    if (sellKind === "decrease") {
-      if (held <= 1) {
+    if (useTargetRebalance) {
+      sharesToSell = sellSharesToReachTarget(held, action.shares, isFullExit);
+      if (sharesToSell <= 0) {
         summary.skipped.push({
           symbol: action.symbol,
-          reason: "DECREASE cannot leave a partial position (only 1 share held)",
+          reason: isFullExit
+            ? "No shares to exit"
+            : `Already at or below target (${held} shares, target ${targetSharesFromAction(action)})`,
         });
         continue;
       }
-      const maxDecreaseShares = held - 1;
-      if (sharesToSell > maxDecreaseShares) {
-        console.log(
-          `${action.symbol}: DECREASE capped ${sharesToSell} → ${maxDecreaseShares} sh ` +
-            `(must leave ≥1 share; requested ${action.shares} vs held ${held})`
-        );
-        sharesToSell = maxDecreaseShares;
-      }
-    }
+      console.log(
+        `${action.symbol}: SELL ${sellKind} → ${sharesToSell} sh (held ${held}, target ${isFullExit ? 0 : targetSharesFromAction(action)})`
+      );
+    } else {
+      sharesToSell = Math.min(action.shares, held);
 
-    if (sharesToSell <= 0) {
-      summary.skipped.push({
-        symbol: action.symbol,
-        reason: "No shares to sell after scaling or empty position",
-      });
-      continue;
+      if (sellKind === "decrease") {
+        if (held <= 1) {
+          summary.skipped.push({
+            symbol: action.symbol,
+            reason: "DECREASE cannot leave a partial position (only 1 share held)",
+          });
+          continue;
+        }
+        const maxDecreaseShares = held - 1;
+        if (sharesToSell > maxDecreaseShares) {
+          console.log(
+            `${action.symbol}: DECREASE capped ${sharesToSell} → ${maxDecreaseShares} sh ` +
+              `(must leave ≥1 share; requested ${action.shares} vs held ${held})`
+          );
+          sharesToSell = maxDecreaseShares;
+        }
+      }
+
+      if (sharesToSell <= 0) {
+        summary.skipped.push({
+          symbol: action.symbol,
+          reason: "No shares to sell after scaling or empty position",
+        });
+        continue;
+      }
     }
     const result = await placeSellOrder(
       portfolioId,
@@ -1269,6 +1335,77 @@ export async function executeTradesFromActions(
     }
   }
 
+  if (useTargetRebalance) {
+    for (const action of orderedActions) {
+      if (action.action !== "BUY") continue;
+
+      const position = positions.get(action.symbol);
+      const held = position?.longQuantity ?? 0;
+      if (held <= 0) continue;
+
+      const target = targetSharesFromAction(action);
+      const sharesToSell = sellSharesToReachTarget(held, target, false);
+      if (sharesToSell <= 0) continue;
+
+      console.log(
+        `${action.symbol}: trim overweight → sell ${sharesToSell} sh (held ${held}, target ${target})`
+      );
+
+      const result = await placeSellOrder(
+        portfolioId,
+        action.symbol,
+        sharesToSell,
+        action.price
+      );
+      if (result.success) {
+        summary.successful.push(result);
+        if (Number.isFinite(remainingBuyBudget) && action.price > 0) {
+          remainingBuyBudget += sharesToSell * action.price;
+        }
+        const newLong = held - sharesToSell;
+        if (newLong <= 0) {
+          positions.delete(action.symbol);
+          if (strategySlugNormalized) {
+            sleeveFullExitSymbols.add(normalizeTickerSymbol(action.symbol));
+          }
+        } else {
+          const prevMv = position!.marketValue;
+          const scaledMv =
+            typeof prevMv === "number" && held > 0
+              ? Math.max(0, (prevMv * newLong) / held)
+              : undefined;
+          positions.set(action.symbol, {
+            ...position!,
+            longQuantity: newLong,
+            ...(scaledMv !== undefined ? { marketValue: scaledMv } : {}),
+          });
+        }
+        console.log(
+          `✓ SELL trim placed: ${action.symbol} - ${sharesToSell} shares @ $${action.price.toFixed(2)}`
+        );
+      } else {
+        summary.failed.push(result);
+        console.error(`✗ SELL trim failed: ${action.symbol} - ${result.error}`);
+      }
+    }
+  }
+
+  if (
+    useTargetRebalance &&
+    exposureCapDollars != null &&
+    sleeveSymbolsForCap != null
+  ) {
+    remainingBuyBudget = refreshStrategySleeveBuyBudget(
+      exposureCapDollars,
+      positions,
+      sleeveSymbolsForCap,
+      priceHints
+    );
+    console.log(
+      `Portfolio ${portfolioId} strategy "${strategySlugNormalized}" post-sell buy budget: $${remainingBuyBudget.toFixed(2)} (cap $${exposureCapDollars.toFixed(2)})`
+    );
+  }
+
   const idealBuyLegs: IdealBuyLeg[] = [];
   for (const action of orderedActions) {
     if (action.action !== "BUY") continue;
@@ -1285,21 +1422,24 @@ export async function executeTradesFromActions(
       continue;
     }
 
-    let idealShares: number;
-    if (isAdd) {
-      idealShares = Math.floor(action.shares);
-    } else {
-      idealShares = buyGapToTargetShares(action.shares, held);
-    }
+    const targetShares = targetSharesFromAction(action);
+    const idealShares = useTargetRebalance
+      ? buyGapToTargetShares(targetShares, held)
+      : isAdd
+        ? Math.floor(action.shares)
+        : buyGapToTargetShares(targetShares, held);
 
     if (idealShares <= 0) {
       summary.skipped.push({
         symbol: action.symbol,
-        reason: isAdd
-          ? "Non-positive add size"
-          : held > 0
-            ? `Already at or above target (${held} shares, target ${Math.floor(action.shares)})`
-            : "Zero shares to buy for target size",
+        reason:
+          held > 0 && held >= targetShares
+            ? `Already at or above target (${held} shares, target ${targetShares})`
+            : useTargetRebalance
+              ? "No shares needed to reach target"
+              : isAdd
+                ? "Non-positive add size"
+                : "Zero shares to buy for target size",
       });
       continue;
     }
@@ -1339,7 +1479,7 @@ export async function executeTradesFromActions(
       proportionalAllocated != null ? proportionalAllocated[i]! : idealShares;
 
     console.log(
-      `${action.symbol}: BUY ${isAdd ? "add" : "enter"} → ${sharesToBuy} sh (held ${held}, signal ${action.shares}${proportionalAllocated ? `, ideal ${idealShares}` : ""})`
+      `${action.symbol}: BUY ${isAdd ? "add" : "enter"} → ${sharesToBuy} sh (held ${held}, target ${targetSharesFromAction(action)}${proportionalAllocated ? `, ideal ${idealShares}` : ""})`
     );
 
     if (sharesToBuy <= 0) {

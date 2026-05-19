@@ -87,10 +87,24 @@ export function scaleActionsToPortfolioSize(
     }
   }
 
+  const rebalanceRows = actions.filter(
+    (a) =>
+      (a.action === "BUY" && a.buyKind === "add") ||
+      (a.action === "SELL" && a.sellKind === "decrease")
+  );
+  let rebalanceModelNotional = 0;
+  for (const a of rebalanceRows) {
+    if (a.price > 0 && a.shares > 0) {
+      rebalanceModelNotional += a.shares * a.price;
+    }
+  }
+
   let rebalanceShareScale = 1;
   if (allBuys.length > 0 && modelNotional > 0) {
     if (enterBuys.length > 0) {
       rebalanceShareScale = proxyScaledBuyNotional / modelNotional;
+    } else if (rebalanceModelNotional > 0) {
+      rebalanceShareScale = targetPortfolioSize / rebalanceModelNotional;
     } else {
       rebalanceShareScale = targetPortfolioSize / modelNotional;
     }
@@ -101,10 +115,11 @@ export function scaleActionsToPortfolioSize(
       ? "no_buys"
       : enterBuys.length > 0
         ? "scale_from_enter_proxy"
-        : "scale_target_over_model_notional";
+        : rebalanceModelNotional > 0
+          ? "scale_sleeve_targets_over_model_notional"
+          : "scale_target_over_model_notional";
 
   const initiallyScaledActions = actions.map((action) => {
-    const rawShares = action.shares;
     if (action.action === "BUY" && action.buyKind === "add") {
       const scaled = Math.floor(action.shares * rebalanceShareScale);
       return { ...action, shares: Math.max(0, scaled) };
@@ -153,19 +168,30 @@ export function scaleActionsToPortfolioSize(
     );
   }
 
+  const scaledSleeveTargetNotional = initiallyScaledActions
+    .filter(
+      (a) =>
+        a.price > 0 &&
+        a.shares > 0 &&
+        ((a.action === "BUY" && a.buyKind === "add") ||
+          (a.action === "SELL" && a.sellKind === "decrease"))
+    )
+    .reduce((sum, a) => sum + a.shares * a.price, 0);
+
   console.log(
     `[scale] targetPortfolioSize=$${targetPortfolioSize.toFixed(2)} enterBuyRows=${enterBuys.length} ` +
-      `allBuyRows=${allBuys.length} allocationPerEnter=$${allocationPerPosition.toFixed(2)} ` +
-      `modelBuyNotional=$${modelNotional.toFixed(2)} proxyScaledBuyNotional=$${proxyScaledBuyNotional.toFixed(2)} ` +
-      `rebalanceShareScale=${rebalanceShareScale.toFixed(8)} buyCapScale=${buyCapScale.toFixed(8)} ` +
-      `initialScaledBuyNotional=$${initiallyScaledBuyNotional.toFixed(2)} finalScaledBuyNotional=$${finalScaledBuyNotional.toFixed(2)} mode=${scaleMode}`
+      `allBuyRows=${allBuys.length} rebalanceRows=${rebalanceRows.length} allocationPerEnter=$${allocationPerPosition.toFixed(2)} ` +
+      `modelBuyNotional=$${modelNotional.toFixed(2)} rebalanceModelNotional=$${rebalanceModelNotional.toFixed(2)} ` +
+      `proxyScaledBuyNotional=$${proxyScaledBuyNotional.toFixed(2)} rebalanceShareScale=${rebalanceShareScale.toFixed(8)} ` +
+      `buyCapScale=${buyCapScale.toFixed(8)} initialScaledBuyNotional=$${initiallyScaledBuyNotional.toFixed(2)} ` +
+      `finalScaledBuyNotional=$${finalScaledBuyNotional.toFixed(2)} scaledSleeveTargetNotional=$${scaledSleeveTargetNotional.toFixed(2)} mode=${scaleMode}`
   );
 
   return finalActions.map((action, idx) => {
     const rawShares = actions[idx]?.shares ?? action.shares;
     if (action.action === "BUY" && action.buyKind === "add") {
       console.log(
-        `[scale] ${action.symbol} INCREASE: raw ${rawShares} sh -> final ${action.shares} sh @ $${action.price.toFixed(2)}`
+        `[scale] ${action.symbol} INCREASE target: raw ${rawShares} sh -> ${action.shares} sh @ $${action.price.toFixed(2)}`
       );
       return action;
     }
@@ -177,7 +203,7 @@ export function scaleActionsToPortfolioSize(
     }
     if (action.action === "SELL" && action.sellKind === "decrease") {
       console.log(
-        `[scale] ${action.symbol} DECREASE: raw ${rawShares} sh -> final ${action.shares} sh @ $${action.price.toFixed(2)}`
+        `[scale] ${action.symbol} DECREASE target: raw ${rawShares} sh -> ${action.shares} sh @ $${action.price.toFixed(2)}`
       );
       return action;
     }
