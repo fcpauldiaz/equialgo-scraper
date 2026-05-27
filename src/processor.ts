@@ -148,13 +148,54 @@ export function scaleActionsToPortfolioSize(
 
   const finalActions =
     buyCapScale < 1
-      ? initiallyScaledActions.map((action) => {
-          if (action.action !== "BUY") {
-            return action;
+      ? (() => {
+          const enterBuyNotional = initiallyScaledActions
+            .filter(
+              (a) =>
+                a.action === "BUY" &&
+                a.buyKind !== "add" &&
+                a.price > 0 &&
+                a.shares > 0
+            )
+            .reduce((sum, a) => sum + a.shares * a.price, 0);
+          const addBuyNotional = initiallyScaledActions
+            .filter(
+              (a) =>
+                a.action === "BUY" &&
+                a.buyKind === "add" &&
+                a.price > 0 &&
+                a.shares > 0
+            )
+            .reduce((sum, a) => sum + a.shares * a.price, 0);
+          const remainingBudgetForAdds = Math.max(
+            0,
+            targetPortfolioSize - enterBuyNotional
+          );
+          const addCapScale =
+            addBuyNotional > 0
+              ? Math.min(1, remainingBudgetForAdds / addBuyNotional)
+              : 1;
+
+          if (enterBuyNotional <= targetPortfolioSize) {
+            return initiallyScaledActions.map((action) => {
+              if (action.action !== "BUY") return action;
+              if (action.buyKind !== "add") return action;
+              const cappedShares = Math.max(
+                0,
+                Math.floor(action.shares * addCapScale)
+              );
+              return { ...action, shares: cappedShares };
+            });
           }
-          const cappedShares = Math.max(0, Math.floor(action.shares * buyCapScale));
-          return { ...action, shares: cappedShares };
-        })
+          return initiallyScaledActions.map((action) => {
+            if (action.action !== "BUY") return action;
+            const cappedShares = Math.max(
+              action.buyKind !== "add" ? 1 : 0,
+              Math.floor(action.shares * buyCapScale)
+            );
+            return { ...action, shares: cappedShares };
+          });
+        })()
       : initiallyScaledActions;
 
   const finalScaledBuyNotional = finalActions
@@ -162,9 +203,16 @@ export function scaleActionsToPortfolioSize(
     .reduce((sum, a) => sum + a.shares * a.price, 0);
 
   if (buyCapScale < 1) {
+    const enterNotional = finalActions
+      .filter((a) => a.action === "BUY" && a.buyKind !== "add" && a.price > 0 && a.shares > 0)
+      .reduce((sum, a) => sum + a.shares * a.price, 0);
+    const addNotional = finalActions
+      .filter((a) => a.action === "BUY" && a.buyKind === "add" && a.price > 0 && a.shares > 0)
+      .reduce((sum, a) => sum + a.shares * a.price, 0);
     console.warn(
-      `[scale] buy notional exceeded target; applying cap factor ${buyCapScale.toFixed(8)} ` +
-        `($${initiallyScaledBuyNotional.toFixed(2)} -> $${finalScaledBuyNotional.toFixed(2)} / target $${targetPortfolioSize.toFixed(2)})`
+      `[scale] buy notional exceeded target ($${initiallyScaledBuyNotional.toFixed(2)} > $${targetPortfolioSize.toFixed(2)}); ` +
+        `enters preserved=$${enterNotional.toFixed(2)}, adds capped=$${addNotional.toFixed(2)}, ` +
+        `final total=$${finalScaledBuyNotional.toFixed(2)}`
     );
   }
 
