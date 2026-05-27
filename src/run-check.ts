@@ -7,6 +7,8 @@ import {
   listTradingPortfolioTargets,
   resolveEffectiveSystemTraderPortfolioUrl,
   writePortfolioProcessedState,
+  persistTradeExecutions,
+  type TradeExecutionRecord,
 } from "./state";
 import type { PortfolioAction, ScrapedPortfolioData } from "./types";
 
@@ -193,6 +195,37 @@ export async function runCheck(options: RunCheckOptions = {}): Promise<RunCheckR
       console.log(
         `Portfolio ${portfolioId}: ${tradeSummary.successful.length} successful, ${tradeSummary.failed.length} failed, ${tradeSummary.skipped.length} skipped`
       );
+
+      const executionRecords: TradeExecutionRecord[] = [
+        ...tradeSummary.successful.map((r) => ({
+          portfolioId,
+          strategySlug: slug,
+          symbol: r.symbol,
+          action: r.action,
+          shares: r.shares,
+          price: r.price,
+          success: true,
+          orderId: r.orderId,
+        })),
+        ...tradeSummary.failed.map((r) => ({
+          portfolioId,
+          strategySlug: slug,
+          symbol: r.symbol,
+          action: r.action,
+          shares: r.shares,
+          price: r.price,
+          success: false,
+          error: r.error,
+        })),
+      ];
+      if (executionRecords.length > 0) {
+        try {
+          await persistTradeExecutions(executionRecords);
+        } catch (persistErr) {
+          const msg = persistErr instanceof Error ? persistErr.message : String(persistErr);
+          console.error(`Portfolio ${portfolioId}: failed to persist trade executions:`, msg);
+        }
+      }
 
       if (tradeSummary.tradingDisabled) {
         console.log(

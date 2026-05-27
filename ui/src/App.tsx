@@ -9,12 +9,14 @@ import {
   runPortfolioDailyCheck,
   fetchStatistics,
   fetchPortfolioPositions,
+  fetchPerformance,
   updatePortfolioSystemTraderStrategies,
   fetchTradierPreviewAccounts,
   fetchTradierAccountsForPortfolio,
   updateTradierPortfolioAccount,
   SYSTEMTRADER_STRATEGY_SLUGS,
   type PortfolioItem,
+  type MonthlyPerformance,
   type TradierAccountChoice,
 } from "./api";
 
@@ -215,7 +217,7 @@ function usePortfolioStrategyMutation() {
   });
 }
 
-type Route = { view: "dashboard" | "portfolios" | "portfolio-detail"; portfolioId?: number };
+type Route = { view: "dashboard" | "portfolios" | "portfolio-detail" | "performance"; portfolioId?: number };
 
 function getRoute(): Route {
   const hash = window.location.hash.replace(/^#/, "") || "/";
@@ -225,6 +227,9 @@ function getRoute(): Route {
   }
   if (path === "/portfolios") {
     return { view: "portfolios" };
+  }
+  if (path === "/performance") {
+    return { view: "performance" };
   }
   const match = path.match(/^\/portfolios\/(\d+)$/);
   if (match) {
@@ -241,6 +246,9 @@ function Nav({ route }: { route: Route }) {
       </a>
       <a href="#/portfolios" className={route.view === "portfolios" ? "active" : ""}>
         Portfolios
+      </a>
+      <a href="#/performance" className={route.view === "performance" ? "active" : ""}>
+        Performance
       </a>
     </nav>
   );
@@ -828,6 +836,151 @@ function PortfolioDetailView({
   );
 }
 
+function formatCurrency(value: number): string {
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function PerformanceBar({ value, max }: { value: number; max: number }) {
+  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
+  return (
+    <div className="perf-bar-track">
+      <div className="perf-bar-fill" style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
+  const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | undefined>(undefined);
+
+  const { data: performance, isLoading, error } = useQuery({
+    queryKey: ["performance", selectedPortfolioId ?? "all"],
+    queryFn: () => fetchPerformance(selectedPortfolioId),
+  });
+
+  const maxTrades = performance
+    ? Math.max(...performance.map((m) => m.totalTrades), 1)
+    : 1;
+
+  const totals = performance?.reduce(
+    (acc, m) => ({
+      trades: acc.trades + m.totalTrades,
+      successful: acc.successful + m.successfulTrades,
+      failed: acc.failed + m.failedTrades,
+      buys: acc.buys + m.buyCount,
+      sells: acc.sells + m.sellCount,
+      buyValue: acc.buyValue + m.totalBuyValue,
+      sellValue: acc.sellValue + m.totalSellValue,
+    }),
+    { trades: 0, successful: 0, failed: 0, buys: 0, sells: 0, buyValue: 0, sellValue: 0 }
+  );
+
+  return (
+    <>
+      <h1>Performance</h1>
+      <p className="perf-subtitle">Month-to-month execution performance across trade runs.</p>
+
+      <div className="perf-filter">
+        <label>
+          Portfolio{" "}
+          <select
+            value={selectedPortfolioId ?? ""}
+            onChange={(e) =>
+              setSelectedPortfolioId(e.target.value ? parseInt(e.target.value, 10) : undefined)
+            }
+          >
+            <option value="">All portfolios</option>
+            {portfolios.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {isLoading && <p>Loading performance data…</p>}
+      {error && <p className="error-msg">{String(error)}</p>}
+
+      {totals && performance && performance.length > 0 && (
+        <div className="perf-summary">
+          <div className="perf-summary-card">
+            <span className="perf-summary-value">{totals.trades}</span>
+            <span className="perf-summary-label">Total Trades</span>
+          </div>
+          <div className="perf-summary-card">
+            <span className="perf-summary-value perf-positive">{totals.successful}</span>
+            <span className="perf-summary-label">Successful</span>
+          </div>
+          <div className="perf-summary-card">
+            <span className="perf-summary-value perf-negative">{totals.failed}</span>
+            <span className="perf-summary-label">Failed</span>
+          </div>
+          <div className="perf-summary-card">
+            <span className="perf-summary-value">${formatCurrency(totals.buyValue)}</span>
+            <span className="perf-summary-label">Total Bought</span>
+          </div>
+          <div className="perf-summary-card">
+            <span className="perf-summary-value">${formatCurrency(totals.sellValue)}</span>
+            <span className="perf-summary-label">Total Sold</span>
+          </div>
+          <div className="perf-summary-card">
+            <span className="perf-summary-value">
+              {totals.trades > 0
+                ? `${((totals.successful / totals.trades) * 100).toFixed(1)}%`
+                : "—"}
+            </span>
+            <span className="perf-summary-label">Success Rate</span>
+          </div>
+        </div>
+      )}
+
+      {performance && performance.length === 0 && !isLoading && (
+        <p className="perf-empty">No trade executions recorded yet. Run a daily check with trading enabled to see performance data.</p>
+      )}
+
+      {performance && performance.length > 0 && (
+        <table className="perf-table">
+          <thead>
+            <tr>
+              <th>Month</th>
+              <th>Trades</th>
+              <th>Success</th>
+              <th>Buys</th>
+              <th>Sells</th>
+              <th>Buy Value</th>
+              <th>Sell Value</th>
+              <th>Activity</th>
+            </tr>
+          </thead>
+          <tbody>
+            {performance.map((m: MonthlyPerformance) => (
+              <tr key={m.month}>
+                <td className="perf-month">{m.month}</td>
+                <td>{m.totalTrades}</td>
+                <td>
+                  <span className={m.successRate >= 90 ? "perf-positive" : m.successRate < 50 ? "perf-negative" : ""}>
+                    {m.successRate}%
+                  </span>
+                </td>
+                <td className="perf-buy">{m.buyCount}</td>
+                <td className="perf-sell">{m.sellCount}</td>
+                <td>${formatCurrency(m.totalBuyValue)}</td>
+                <td>${formatCurrency(m.totalSellValue)}</td>
+                <td className="perf-bar-cell">
+                  <PerformanceBar value={m.totalTrades} max={maxTrades} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </>
+  );
+}
+
 function PortfoliosView({
   loginInProgress,
   onLogin,
@@ -989,6 +1142,9 @@ export default function App() {
           strategyMutation={strategyMutation}
           portfolioUrlEnvOverride={portfolioUrlEnvOverride}
         />
+      )}
+      {route.view === "performance" && (
+        <PerformanceView portfolios={portfolios} />
       )}
       {route.view === "portfolio-detail" && route.portfolioId != null && (
         <PortfolioDetailView

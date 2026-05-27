@@ -218,6 +218,27 @@ export async function updatePortfolioSystemTraderStrategies(
   return { ok: true };
 }
 
+export interface MonthlyPerformance {
+  month: string;
+  totalTrades: number;
+  successfulTrades: number;
+  failedTrades: number;
+  buyCount: number;
+  sellCount: number;
+  totalBuyValue: number;
+  totalSellValue: number;
+  successRate: number;
+}
+
+export async function fetchPerformance(
+  portfolioId?: number
+): Promise<MonthlyPerformance[]> {
+  const params = portfolioId != null ? `?portfolioId=${portfolioId}` : "";
+  const r = await fetch(`/api/performance${params}`);
+  if (!r.ok) throw new Error(r.statusText);
+  return r.json();
+}
+
 export interface PortfolioPosition {
   symbol: string;
   longQuantity: number;
