@@ -392,3 +392,138 @@ ul {
 .positions-table .pl-negative {
   color: #c00;
 }
+
+/* Performance Dashboard */
+
+.perf-subtitle {
+  font-size: 0.9rem;
+  color: #555;
+  margin: -0.5rem 0 1rem;
+}
+
+.perf-filter {
+  margin-bottom: 1.25rem;
+}
+
+.perf-filter label {
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.perf-filter select {
+  padding: 0.35rem 0.5rem;
+  font-size: 0.875rem;
+  min-width: 10rem;
+}
+
+.perf-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.perf-summary-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.75rem 0.5rem;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.perf-summary-value {
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.perf-summary-label {
+  font-size: 0.7rem;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  margin-top: 0.2rem;
+}
+
+.perf-positive {
+  color: #0a0;
+}
+
+.perf-negative {
+  color: #c00;
+}
+
+.perf-empty {
+  color: #666;
+  font-size: 0.9rem;
+  padding: 2rem 0;
+  text-align: center;
+}
+
+.perf-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.perf-table th,
+.perf-table td {
+  padding: 0.5rem 0.4rem;
+  text-align: right;
+  border-bottom: 1px solid #eee;
+  white-space: nowrap;
+}
+
+.perf-table th {
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: #555;
+}
+
+.perf-table th:first-child,
+.perf-table td:first-child {
+  text-align: left;
+}
+
+.perf-month {
+  font-weight: 500;
+}
+
+.perf-buy {
+  color: #0a0;
+}
+
+.perf-sell {
+  color: #c00;
+}
+
+.perf-bar-cell {
+  width: 4rem;
+  min-width: 4rem;
+}
+
+.perf-bar-track {
+  height: 0.5rem;
+  background: #eee;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.perf-bar-fill {
+  height: 100%;
+  background: #06c;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+@media (max-width: 380px) {
+  .perf-summary {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

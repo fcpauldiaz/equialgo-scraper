@@ -367,6 +367,7 @@ export async function initializeDatabase(): Promise<void> {
 
     await migratePortfolioSystemtraderStrategiesTable(db);
     await migratePortfolioStrategySymbolsTable(db);
+    await migrateTradeExecutionsTable(db);
 
     console.log("Database initialized successfully");
   } catch (error) {
@@ -946,4 +947,126 @@ export async function writeTradierCredentials(
     console.error("Error writing Tradier credentials to database:", errorMessage);
     throw error;
   }
+}
+
+async function migrateTradeExecutionsTable(
+  db: ReturnType<typeof getClient>
+): Promise<void> {
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS trade_executions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      portfolio_id INTEGER NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+      strategy_slug TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      action TEXT NOT NULL,
+      shares INTEGER NOT NULL,
+      price REAL NOT NULL,
+      success INTEGER NOT NULL,
+      order_id TEXT,
+      error TEXT,
+      executed_at INTEGER NOT NULL
+    )
+  `);
+}
+
+export interface TradeExecutionRecord {
+  portfolioId: number;
+  strategySlug: string;
+  symbol: string;
+  action: "BUY" | "SELL";
+  shares: number;
+  price: number;
+  success: boolean;
+  orderId?: string;
+  error?: string;
+}
+
+export async function persistTradeExecutions(
+  records: TradeExecutionRecord[]
+): Promise<void> {
+  if (records.length === 0) return;
+  const db = getClient();
+  const executedAt = Date.now();
+  for (const r of records) {
+    await db.execute(
+      `INSERT INTO trade_executions (portfolio_id, strategy_slug, symbol, action, shares, price, success, order_id, error, executed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        r.portfolioId,
+        r.strategySlug,
+        r.symbol,
+        r.action,
+        r.shares,
+        r.price,
+        r.success ? 1 : 0,
+        r.orderId ?? null,
+        r.error ?? null,
+        executedAt,
+      ]
+    );
+  }
+}
+
+export interface MonthlyPerformance {
+  month: string;
+  totalTrades: number;
+  successfulTrades: number;
+  failedTrades: number;
+  buyCount: number;
+  sellCount: number;
+  totalBuyValue: number;
+  totalSellValue: number;
+  successRate: number;
+}
+
+export async function readMonthlyPerformance(
+  portfolioId?: number
+): Promise<MonthlyPerformance[]> {
+  const db = getClient();
+  const whereClause = portfolioId != null ? "WHERE portfolio_id = ?" : "";
+  const params = portfolioId != null ? [portfolioId] : [];
+
+  const result = await db.execute(
+    `SELECT
+       strftime('%Y-%m', executed_at / 1000, 'unixepoch') AS month,
+       COUNT(*) AS total_trades,
+       SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS successful_trades,
+       SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failed_trades,
+       SUM(CASE WHEN action = 'BUY' THEN 1 ELSE 0 END) AS buy_count,
+       SUM(CASE WHEN action = 'SELL' THEN 1 ELSE 0 END) AS sell_count,
+       SUM(CASE WHEN action = 'BUY' AND success = 1 THEN shares * price ELSE 0 END) AS total_buy_value,
+       SUM(CASE WHEN action = 'SELL' AND success = 1 THEN shares * price ELSE 0 END) AS total_sell_value
+     FROM trade_executions
+     ${whereClause}
+     GROUP BY month
+     ORDER BY month DESC`,
+    params
+  );
+
+  return (
+    result.rows as unknown as {
+      month: string;
+      total_trades: number;
+      successful_trades: number;
+      failed_trades: number;
+      buy_count: number;
+      sell_count: number;
+      total_buy_value: number;
+      total_sell_value: number;
+    }[]
+  ).map((row) => {
+    const total = Number(row.total_trades) || 0;
+    const successful = Number(row.successful_trades) || 0;
+    return {
+      month: row.month,
+      totalTrades: total,
+      successfulTrades: successful,
+      failedTrades: Number(row.failed_trades) || 0,
+      buyCount: Number(row.buy_count) || 0,
+      sellCount: Number(row.sell_count) || 0,
+      totalBuyValue: Number(row.total_buy_value) || 0,
+      totalSellValue: Number(row.total_sell_value) || 0,
+      successRate: total > 0 ? Math.round((successful / total) * 1000) / 10 : 0,
+    };
+  });
 }
