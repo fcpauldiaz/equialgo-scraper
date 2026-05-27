@@ -4,4 +4,4 @@ dist/
 state.json
 .env
 .DS_Store
-
+local.db
