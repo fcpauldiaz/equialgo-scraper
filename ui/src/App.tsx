@@ -10,6 +10,11 @@ import {
   fetchStatistics,
   fetchPortfolioPositions,
   fetchPerformance,
+  fetchAuthStatus,
+  login,
+  logout,
+  getAuthToken,
+  setAuthToken,
   updatePortfolioSystemTraderStrategies,
   fetchTradierPreviewAccounts,
   fetchTradierAccountsForPortfolio,
@@ -238,7 +243,19 @@ function getRoute(): Route {
   return { view: "dashboard" };
 }
 
-function Nav({ route }: { route: Route }) {
+function Nav({
+  route,
+  authEnabled,
+  authenticated,
+  onLoginClick,
+  onLogout,
+}: {
+  route: Route;
+  authEnabled: boolean;
+  authenticated: boolean;
+  onLoginClick: () => void;
+  onLogout: () => void;
+}) {
   return (
     <nav className="app-nav">
       <a href="#/dashboard" className={route.view === "dashboard" ? "active" : ""}>
@@ -250,7 +267,78 @@ function Nav({ route }: { route: Route }) {
       <a href="#/performance" className={route.view === "performance" ? "active" : ""}>
         Performance
       </a>
+      {authEnabled && (
+        <span className="nav-auth">
+          {authenticated ? (
+            <button type="button" className="nav-auth-btn" onClick={onLogout}>
+              Logout
+            </button>
+          ) : (
+            <button type="button" className="nav-auth-btn" onClick={onLoginClick}>
+              Login
+            </button>
+          )}
+        </span>
+      )}
     </nav>
+  );
+}
+
+function LoginModal({
+  onClose,
+  onSuccess,
+}: {
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!password.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const { token } = await login(password);
+      setAuthToken(token);
+      onSuccess();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="login-overlay" onClick={onClose}>
+      <form
+        className="login-modal"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={handleSubmit}
+      >
+        <h2>Admin Login</h2>
+        <p>Enter password to make changes.</p>
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Password"
+          autoFocus
+          disabled={loading}
+        />
+        {error && <p className="error-msg">{error}</p>}
+        <div className="login-actions">
+          <button type="submit" disabled={loading || !password.trim()}>
+            {loading ? "Logging in…" : "Login"}
+          </button>
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -310,6 +398,7 @@ function PortfolioRow({
   showPositionsLink,
   onSlugsChange,
   strategyUpdatePending,
+  canWrite = true,
 }: {
   portfolio: PortfolioItem;
   loginInProgress: boolean;
@@ -320,6 +409,7 @@ function PortfolioRow({
   showPositionsLink?: boolean;
   onSlugsChange: (portfolioId: number, slugs: string[]) => void;
   strategyUpdatePending: boolean;
+  canWrite?: boolean;
 }) {
   const verifyMutation = useVerifyPortfolio();
   const runDailyCheckMutation = useRunPortfolioDailyCheck();
@@ -446,7 +536,7 @@ function PortfolioRow({
           {showPositionsLink && portfolio.hasCredentials && (
             <a href={`#/portfolios/${portfolio.id}`}>Positions</a>
           )}
-          {portfolio.hasCredentials && portfolio.brokerage === "schwab" && (
+          {canWrite && portfolio.hasCredentials && portfolio.brokerage === "schwab" && (
             <button
               type="button"
               onClick={() => onLogin(portfolio.id)}
@@ -455,7 +545,7 @@ function PortfolioRow({
               Re-authorize Schwab
             </button>
           )}
-          {!portfolio.hasCredentials && (
+          {canWrite && !portfolio.hasCredentials && (
             <>
               <button
                 type="button"
@@ -469,7 +559,7 @@ function PortfolioRow({
               </button>
             </>
           )}
-          {portfolio.hasCredentials && portfolio.brokerage === "tradier" && (
+          {canWrite && portfolio.hasCredentials && portfolio.brokerage === "tradier" && (
             <button type="button" onClick={() => setTradierPickerOpen((o) => !o)}>
               {tradierPickerOpen ? "Cancel" : "Tradier account"}
             </button>
@@ -481,7 +571,7 @@ function PortfolioRow({
           >
             Verify
           </button>
-          {portfolio.hasCredentials && (
+          {canWrite && portfolio.hasCredentials && (
             <button
               type="button"
               onClick={handleRunDailyCheck}
@@ -506,7 +596,7 @@ function PortfolioRow({
       <StrategySignalCheckboxes
         portfolioId={portfolio.id}
         systemtraderSlugs={portfolio.systemtraderSlugs}
-        disabled={strategyUpdatePending}
+        disabled={strategyUpdatePending || !canWrite}
         onSlugsChange={onSlugsChange}
       />
       {portfolio.strategyRuns.length > 0 && (
@@ -610,11 +700,13 @@ function DashboardView({
   onLogin,
   strategyMutation,
   portfolioUrlEnvOverride,
+  canWrite,
 }: {
   loginInProgress: boolean;
   onLogin: (id: number) => void;
   strategyMutation: ReturnType<typeof usePortfolioStrategyMutation>;
   portfolioUrlEnvOverride: boolean;
+  canWrite: boolean;
 }) {
   const { data: stats, isLoading, error } = useStatistics();
   const { data: portfolios = [] } = usePortfolios();
@@ -666,6 +758,7 @@ function DashboardView({
                 strategyMutation.mutate({ portfolioId: id, slugs })
               }
               strategyUpdatePending={strategyMutation.isPending}
+              canWrite={canWrite}
             />
           ))}
         </ul>
@@ -682,11 +775,13 @@ function PortfolioDetailView({
   portfolios,
   strategyMutation,
   portfolioUrlEnvOverride,
+  canWrite,
 }: {
   portfolioId: number;
   portfolios: PortfolioItem[];
   strategyMutation: ReturnType<typeof usePortfolioStrategyMutation>;
   portfolioUrlEnvOverride: boolean;
+  canWrite: boolean;
 }) {
   const portfolio = portfolios.find((p) => p.id === portfolioId);
   const { data: positions, isLoading, error } = usePortfolioPositions(portfolioId);
@@ -741,7 +836,7 @@ function PortfolioDetailView({
           <StrategySignalCheckboxes
             portfolioId={portfolio.id}
             systemtraderSlugs={portfolio.systemtraderSlugs}
-            disabled={strategyMutation.isPending}
+            disabled={strategyMutation.isPending || !canWrite}
             onSlugsChange={(id, slugs) =>
               strategyMutation.mutate({ portfolioId: id, slugs })
             }
@@ -756,7 +851,7 @@ function PortfolioDetailView({
               ))}
             </div>
           )}
-          {portfolio.hasCredentials && (
+          {canWrite && portfolio.hasCredentials && (
             <div className="portfolio-manual-run">
               <button
                 type="button"
@@ -986,11 +1081,13 @@ function PortfoliosView({
   onLogin,
   strategyMutation,
   portfolioUrlEnvOverride,
+  canWrite,
 }: {
   loginInProgress: boolean;
   onLogin: (id: number) => void;
   strategyMutation: ReturnType<typeof usePortfolioStrategyMutation>;
   portfolioUrlEnvOverride: boolean;
+  canWrite: boolean;
 }) {
   const { data: portfolios = [], isLoading, error } = usePortfolios();
   const createMutation = useCreatePortfolio();
@@ -1036,6 +1133,7 @@ function PortfoliosView({
               strategyMutation.mutate({ portfolioId: id, slugs })
             }
             strategyUpdatePending={strategyMutation.isPending}
+            canWrite={canWrite}
           />
         ))}
       </ul>
@@ -1043,22 +1141,24 @@ function PortfoliosView({
         <p className="error-msg">{String(strategyMutation.error)}</p>
       )}
 
-      <div className="add-form">
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="New portfolio name"
-          onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-        />
-        <button
-          type="button"
-          onClick={handleAdd}
-          disabled={createMutation.isPending || !name.trim()}
-        >
-          Add portfolio
-        </button>
-      </div>
+      {canWrite && (
+        <div className="add-form">
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="New portfolio name"
+            onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+          />
+          <button
+            type="button"
+            onClick={handleAdd}
+            disabled={createMutation.isPending || !name.trim()}
+          >
+            Add portfolio
+          </button>
+        </div>
+      )}
 
       {createMutation.isError && (
         <p className="error-msg">{String(createMutation.error)}</p>
@@ -1080,6 +1180,33 @@ export default function App() {
   const { data: portfolios = [] } = usePortfolios();
   const { data: stats } = useStatistics();
   const portfolioUrlEnvOverride = stats?.portfolioUrlEnvOverride ?? false;
+
+  const [authEnabled, setAuthEnabled] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [showLoginModal, setShowLoginModal] = useState(false);
+
+  useEffect(() => {
+    fetchAuthStatus(getAuthToken()).then((status) => {
+      setAuthEnabled(status.authEnabled);
+      setAuthenticated(status.authenticated);
+    }).catch(() => {});
+  }, []);
+
+  const handleLogout = async () => {
+    const token = getAuthToken();
+    if (token) {
+      await logout(token).catch(() => {});
+    }
+    setAuthToken(null);
+    setAuthenticated(false);
+  };
+
+  const handleLoginSuccess = () => {
+    setAuthenticated(true);
+    setShowLoginModal(false);
+  };
+
+  const canWrite = !authEnabled || authenticated;
 
   useEffect(() => {
     const onHashChange = () => setRoute(getRoute());
@@ -1126,13 +1253,26 @@ export default function App() {
 
   return (
     <>
-      <Nav route={route} />
+      <Nav
+        route={route}
+        authEnabled={authEnabled}
+        authenticated={authenticated}
+        onLoginClick={() => setShowLoginModal(true)}
+        onLogout={handleLogout}
+      />
+      {showLoginModal && (
+        <LoginModal
+          onClose={() => setShowLoginModal(false)}
+          onSuccess={handleLoginSuccess}
+        />
+      )}
       {route.view === "dashboard" && (
         <DashboardView
           loginInProgress={loginInProgress}
           onLogin={handleLogin}
           strategyMutation={strategyMutation}
           portfolioUrlEnvOverride={portfolioUrlEnvOverride}
+          canWrite={canWrite}
         />
       )}
       {route.view === "portfolios" && (
@@ -1141,6 +1281,7 @@ export default function App() {
           onLogin={handleLogin}
           strategyMutation={strategyMutation}
           portfolioUrlEnvOverride={portfolioUrlEnvOverride}
+          canWrite={canWrite}
         />
       )}
       {route.view === "performance" && (
@@ -1152,6 +1293,7 @@ export default function App() {
           portfolios={portfolios}
           strategyMutation={strategyMutation}
           portfolioUrlEnvOverride={portfolioUrlEnvOverride}
+          canWrite={canWrite}
         />
       )}
     </>
