@@ -1,3 +1,4 @@
+import * as crypto from "crypto";
 import * as fs from "fs";
 import * as http from "http";
 import * as path from "path";
@@ -82,6 +83,33 @@ function sendJson(res: http.ServerResponse, status: number, data: unknown): void
   res.end(JSON.stringify(data));
 }
 
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD?.trim() || "";
+const activeSessions = new Set<string>();
+
+function generateSessionToken(): string {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+function extractBearerToken(req: http.IncomingMessage): string | null {
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith("Bearer ")) {
+    return authHeader.slice(7).trim();
+  }
+  return null;
+}
+
+function isAuthenticated(req: http.IncomingMessage): boolean {
+  if (!ADMIN_PASSWORD) return true;
+  const token = extractBearerToken(req);
+  return token != null && activeSessions.has(token);
+}
+
+function requireAuth(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+  if (isAuthenticated(req)) return true;
+  sendJson(res, 401, { error: "Authentication required" });
+  return false;
+}
+
 function serveStatic(
   res: http.ServerResponse,
   filePath: string,
@@ -140,6 +168,42 @@ export function startUiServer(): http.Server {
       return;
     }
 
+    if (pathname === "/api/auth/status" && method === "GET") {
+      const authEnabled = Boolean(ADMIN_PASSWORD);
+      const authenticated = isAuthenticated(req);
+      sendJson(res, 200, { authEnabled, authenticated });
+      return;
+    }
+
+    if (pathname === "/api/login" && method === "POST") {
+      if (!ADMIN_PASSWORD) {
+        sendJson(res, 400, { error: "Auth not configured (ADMIN_PASSWORD not set)" });
+        return;
+      }
+      try {
+        const body = await parseBody(req);
+        const password = typeof body.password === "string" ? body.password : "";
+        if (password !== ADMIN_PASSWORD) {
+          sendJson(res, 401, { error: "Invalid password" });
+          return;
+        }
+        const token = generateSessionToken();
+        activeSessions.add(token);
+        sendJson(res, 200, { token });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        sendJson(res, 500, { error: message });
+      }
+      return;
+    }
+
+    if (pathname === "/api/logout" && method === "POST") {
+      const token = extractBearerToken(req);
+      if (token) activeSessions.delete(token);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
     if (pathname === "/api/portfolios" && method === "GET") {
       try {
         const portfolios = await listPortfolios();
@@ -152,6 +216,7 @@ export function startUiServer(): http.Server {
     }
 
     if (pathname === "/api/portfolios" && method === "POST") {
+      if (!requireAuth(req, res)) return;
       try {
         const body = await parseBody(req);
         const name = typeof body.name === "string" ? body.name.trim() : "";
@@ -169,6 +234,7 @@ export function startUiServer(): http.Server {
     }
 
     if (pathname === "/api/schwab/start-login" && method === "POST") {
+      if (!requireAuth(req, res)) return;
       try {
         const body = await parseBody(req);
         const portfolioId =
@@ -234,6 +300,7 @@ export function startUiServer(): http.Server {
       /^\/api\/portfolios\/(\d+)\/run-daily-check$/
     );
     if (runDailyCheckMatch && method === "POST") {
+      if (!requireAuth(req, res)) return;
       const portfolioId = parseInt(runDailyCheckMatch[1], 10);
       if (Number.isNaN(portfolioId) || portfolioId <= 0) {
         sendJson(res, 400, { error: "Invalid portfolio id" });
@@ -263,6 +330,7 @@ export function startUiServer(): http.Server {
     }
 
     if (pathname === "/api/tradier/preview-accounts" && method === "POST") {
+      if (!requireAuth(req, res)) return;
       try {
         const body = await parseBody(req);
         const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
@@ -308,6 +376,7 @@ export function startUiServer(): http.Server {
       /^\/api\/portfolios\/(\d+)\/tradier-account$/
     );
     if (tradierAccountPutMatch && method === "PUT") {
+      if (!requireAuth(req, res)) return;
       const portfolioId = parseInt(tradierAccountPutMatch[1], 10);
       if (Number.isNaN(portfolioId) || portfolioId <= 0) {
         sendJson(res, 400, { error: "Invalid portfolio id" });
@@ -345,6 +414,7 @@ export function startUiServer(): http.Server {
     }
 
     if (pathname === "/api/tradier/connect" && method === "POST") {
+      if (!requireAuth(req, res)) return;
       let connectPortfolioId: number | undefined;
       try {
         const body = await parseBody(req);
@@ -442,6 +512,7 @@ export function startUiServer(): http.Server {
       /^\/api\/portfolios\/(\d+)\/systemtrader-strategy$/
     );
     if (strategyMatch && method === "PUT") {
+      if (!requireAuth(req, res)) return;
       try {
         const portfolioId = parseInt(strategyMatch[1], 10);
         if (Number.isNaN(portfolioId) || portfolioId <= 0) {
