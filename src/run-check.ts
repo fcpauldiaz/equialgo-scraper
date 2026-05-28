@@ -234,7 +234,7 @@ export async function runCheck(options: RunCheckOptions = {}): Promise<RunCheckR
         continue;
       }
 
-      const timestamp = new Date(signalDate).getTime();
+      const timestamp = Date.now();
       try {
         await writePortfolioProcessedState(portfolioId, signalDate, timestamp, slug);
       } catch (error) {
