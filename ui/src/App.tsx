@@ -723,7 +723,7 @@ function DashboardView({
           <ul className="stats-list">
             <li>Most recent processed date: {stats.lastProcessedDate ?? "—"}</li>
             {stats.lastProcessedTimestamp != null && (
-              <li>Most recent run: {new Date(stats.lastProcessedTimestamp).toLocaleString()}</li>
+              <li>Most recent run: {new Date(stats.lastProcessedTimestamp).toLocaleString("en-US", { timeZone: "America/New_York" })} ET</li>
             )}
             <li>Portfolios: {stats.portfolioCount}</li>
             <li>Connected: {stats.connectedCount}</li>
