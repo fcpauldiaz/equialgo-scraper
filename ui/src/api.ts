@@ -1,3 +1,53 @@
+export interface AuthStatus {
+  authEnabled: boolean;
+  authenticated: boolean;
+}
+
+export async function fetchAuthStatus(token: string | null): Promise<AuthStatus> {
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const r = await fetch("/api/auth/status", { headers });
+  if (!r.ok) throw new Error(r.statusText);
+  return r.json();
+}
+
+export async function login(password: string): Promise<{ token: string }> {
+  const r = await fetch("/api/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+  const data = (await r.json().catch(() => ({}))) as { token?: string; error?: string };
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return { token: data.token! };
+}
+
+export async function logout(token: string): Promise<void> {
+  await fetch("/api/logout", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+let _authToken: string | null = localStorage.getItem("equialgo_token");
+
+export function getAuthToken(): string | null {
+  return _authToken;
+}
+
+export function setAuthToken(token: string | null): void {
+  _authToken = token;
+  if (token) {
+    localStorage.setItem("equialgo_token", token);
+  } else {
+    localStorage.removeItem("equialgo_token");
+  }
+}
+
+export function authHeaders(): Record<string, string> {
+  return _authToken ? { Authorization: `Bearer ${_authToken}` } : {};
+}
+
 export type PortfolioBrokerage = "schwab" | "tradier" | null;
 
 export interface PortfolioStrategyRun {
@@ -35,7 +85,7 @@ export async function fetchPortfolios(): Promise<PortfolioItem[]> {
 export async function createPortfolio(name: string): Promise<{ id: number }> {
   const r = await fetch("/api/portfolios", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ name }),
   });
   if (!r.ok) {
@@ -48,7 +98,7 @@ export async function createPortfolio(name: string): Promise<{ id: number }> {
 export async function startSchwabLogin(portfolioId: number): Promise<{ authUrl: string }> {
   const r = await fetch("/api/schwab/start-login", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ portfolioId }),
   });
   if (r.status === 409) {
@@ -67,7 +117,7 @@ export async function fetchTradierPreviewAccounts(
 ): Promise<{ accounts: TradierAccountChoice[] }> {
   const r = await fetch("/api/tradier/preview-accounts", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ apiKey, sandbox }),
   });
   const data = (await r.json().catch(() => ({}))) as {
@@ -100,7 +150,7 @@ export async function updateTradierPortfolioAccount(
 ): Promise<{ ok: boolean }> {
   const r = await fetch(`/api/portfolios/${portfolioId}/tradier-account`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ accountId }),
   });
   const data = (await r.json().catch(() => ({}))) as { error?: string };
@@ -127,7 +177,7 @@ export async function connectTradier(
   }
   const r = await fetch("/api/tradier/connect", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   const data = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
@@ -160,6 +210,7 @@ export async function runPortfolioDailyCheck(
 ): Promise<RunPortfolioDailyCheckResult> {
   const r = await fetch(`/api/portfolios/${portfolioId}/run-daily-check`, {
     method: "POST",
+    headers: authHeaders(),
   });
   const data = (await r.json().catch(() => ({}))) as {
     ok?: boolean;
@@ -208,7 +259,7 @@ export async function updatePortfolioSystemTraderStrategies(
 ): Promise<{ ok: boolean }> {
   const r = await fetch(`/api/portfolios/${portfolioId}/systemtrader-strategy`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ slugs }),
   });
   const data = (await r.json().catch(() => ({}))) as { error?: string };
