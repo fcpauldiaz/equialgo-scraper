@@ -938,11 +938,16 @@ function formatCurrency(value: number): string {
   });
 }
 
-function PerformanceBar({ value, max }: { value: number; max: number }) {
-  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
+function PnLBar({ value, max }: { value: number; max: number }) {
+  if (max === 0) return null;
+  const pct = Math.min(100, (Math.abs(value) / max) * 100);
+  const isPositive = value >= 0;
   return (
-    <div className="perf-bar-track">
-      <div className="perf-bar-fill" style={{ width: `${pct}%` }} />
+    <div className="pnl-bar-track">
+      <div
+        className={`pnl-bar-fill ${isPositive ? "pnl-bar-positive" : "pnl-bar-negative"}`}
+        style={{ width: `${pct}%` }}
+      />
     </div>
   );
 }
@@ -950,32 +955,36 @@ function PerformanceBar({ value, max }: { value: number; max: number }) {
 function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | undefined>(undefined);
 
-  const { data: performance, isLoading, error } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ["performance", selectedPortfolioId ?? "all"],
     queryFn: () => fetchPerformance(selectedPortfolioId),
   });
 
-  const maxTrades = performance
-    ? Math.max(...performance.map((m) => m.totalTrades), 1)
-    : 1;
+  const monthly = data?.monthly ?? [];
+  const closedTrades = data?.closedTrades ?? [];
 
-  const totals = performance?.reduce(
+  const totals = monthly.reduce(
     (acc, m) => ({
-      trades: acc.trades + m.totalTrades,
-      successful: acc.successful + m.successfulTrades,
-      failed: acc.failed + m.failedTrades,
-      buys: acc.buys + m.buyCount,
-      sells: acc.sells + m.sellCount,
-      buyValue: acc.buyValue + m.totalBuyValue,
-      sellValue: acc.sellValue + m.totalSellValue,
+      pnl: acc.pnl + m.realizedPnL,
+      closed: acc.closed + m.closedTrades,
+      wins: acc.wins + m.winningTrades,
+      losses: acc.losses + m.losingTrades,
     }),
-    { trades: 0, successful: 0, failed: 0, buys: 0, sells: 0, buyValue: 0, sellValue: 0 }
+    { pnl: 0, closed: 0, wins: 0, losses: 0 }
   );
+
+  const overallWinRate = totals.closed > 0
+    ? Math.round((totals.wins / totals.closed) * 1000) / 10
+    : 0;
+
+  const maxAbsPnL = monthly.length > 0
+    ? Math.max(...monthly.map((m) => Math.abs(m.realizedPnL)), 1)
+    : 1;
 
   return (
     <>
       <h1>Performance</h1>
-      <p className="perf-subtitle">Month-to-month execution performance across trade runs.</p>
+      <p className="perf-subtitle">Month-to-month trade P&L from closed positions.</p>
 
       <div className="perf-filter">
         <label>
@@ -999,78 +1008,111 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
       {isLoading && <p>Loading performance data…</p>}
       {error && <p className="error-msg">{String(error)}</p>}
 
-      {totals && performance && performance.length > 0 && (
+      {monthly.length > 0 && (
         <div className="perf-summary">
           <div className="perf-summary-card">
-            <span className="perf-summary-value">{totals.trades}</span>
-            <span className="perf-summary-label">Total Trades</span>
-          </div>
-          <div className="perf-summary-card">
-            <span className="perf-summary-value perf-positive">{totals.successful}</span>
-            <span className="perf-summary-label">Successful</span>
-          </div>
-          <div className="perf-summary-card">
-            <span className="perf-summary-value perf-negative">{totals.failed}</span>
-            <span className="perf-summary-label">Failed</span>
-          </div>
-          <div className="perf-summary-card">
-            <span className="perf-summary-value">${formatCurrency(totals.buyValue)}</span>
-            <span className="perf-summary-label">Total Bought</span>
-          </div>
-          <div className="perf-summary-card">
-            <span className="perf-summary-value">${formatCurrency(totals.sellValue)}</span>
-            <span className="perf-summary-label">Total Sold</span>
-          </div>
-          <div className="perf-summary-card">
-            <span className="perf-summary-value">
-              {totals.trades > 0
-                ? `${((totals.successful / totals.trades) * 100).toFixed(1)}%`
-                : "—"}
+            <span className={`perf-summary-value ${totals.pnl >= 0 ? "perf-positive" : "perf-negative"}`}>
+              {totals.pnl >= 0 ? "+" : ""}${formatCurrency(totals.pnl)}
             </span>
-            <span className="perf-summary-label">Success Rate</span>
+            <span className="perf-summary-label">Total P&L</span>
+          </div>
+          <div className="perf-summary-card">
+            <span className="perf-summary-value">{totals.closed}</span>
+            <span className="perf-summary-label">Closed Trades</span>
+          </div>
+          <div className="perf-summary-card">
+            <span className="perf-summary-value perf-positive">{totals.wins}</span>
+            <span className="perf-summary-label">Winners</span>
+          </div>
+          <div className="perf-summary-card">
+            <span className="perf-summary-value perf-negative">{totals.losses}</span>
+            <span className="perf-summary-label">Losers</span>
+          </div>
+          <div className="perf-summary-card">
+            <span className={`perf-summary-value ${overallWinRate >= 50 ? "perf-positive" : "perf-negative"}`}>
+              {overallWinRate}%
+            </span>
+            <span className="perf-summary-label">Win Rate</span>
           </div>
         </div>
       )}
 
-      {performance && performance.length === 0 && !isLoading && (
-        <p className="perf-empty">No trade executions recorded yet. Run a daily check with trading enabled to see performance data.</p>
+      {monthly.length === 0 && !isLoading && (
+        <p className="perf-empty">No closed trades yet. Performance tracks realized P&L when positions are sold.</p>
       )}
 
-      {performance && performance.length > 0 && (
-        <table className="perf-table">
-          <thead>
-            <tr>
-              <th>Month</th>
-              <th>Trades</th>
-              <th>Success</th>
-              <th>Buys</th>
-              <th>Sells</th>
-              <th>Buy Value</th>
-              <th>Sell Value</th>
-              <th>Activity</th>
-            </tr>
-          </thead>
-          <tbody>
-            {performance.map((m: MonthlyPerformance) => (
-              <tr key={m.month}>
-                <td className="perf-month">{m.month}</td>
-                <td>{m.totalTrades}</td>
-                <td>
-                  <span className={m.successRate >= 90 ? "perf-positive" : m.successRate < 50 ? "perf-negative" : ""}>
-                    {m.successRate}%
-                  </span>
-                </td>
-                <td className="perf-buy">{m.buyCount}</td>
-                <td className="perf-sell">{m.sellCount}</td>
-                <td>${formatCurrency(m.totalBuyValue)}</td>
-                <td>${formatCurrency(m.totalSellValue)}</td>
-                <td className="perf-bar-cell">
-                  <PerformanceBar value={m.totalTrades} max={maxTrades} />
-                </td>
+      {monthly.length > 0 && (
+        <>
+          <h2>Monthly P&L</h2>
+          <table className="perf-table">
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th>P&L</th>
+                <th>Closed</th>
+                <th>Win Rate</th>
+                <th>Bought</th>
+                <th>Sold</th>
+                <th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {monthly.map((m: MonthlyPerformance) => (
+                <tr key={m.month}>
+                  <td className="perf-month">{m.month}</td>
+                  <td className={m.realizedPnL >= 0 ? "perf-positive" : "perf-negative"}>
+                    {m.realizedPnL >= 0 ? "+" : ""}${formatCurrency(m.realizedPnL)}
+                  </td>
+                  <td>{m.closedTrades}</td>
+                  <td className={m.winRate >= 50 ? "perf-positive" : "perf-negative"}>
+                    {m.winRate}%
+                  </td>
+                  <td>${formatCurrency(m.totalBought)}</td>
+                  <td>${formatCurrency(m.totalSold)}</td>
+                  <td className="perf-bar-cell">
+                    <PnLBar value={m.realizedPnL} max={maxAbsPnL} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {closedTrades.length > 0 && (
+        <>
+          <h2>Recent Closed Trades</h2>
+          <table className="perf-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Shares</th>
+                <th>Entry</th>
+                <th>Exit</th>
+                <th>P&L</th>
+                <th>Return</th>
+                <th>Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {closedTrades.map((t, i) => (
+                <tr key={`${t.symbol}-${t.closedAt}-${i}`}>
+                  <td className="perf-month">{t.symbol}</td>
+                  <td>{t.shares}</td>
+                  <td>${formatCurrency(t.buyPrice)}</td>
+                  <td>${formatCurrency(t.sellPrice)}</td>
+                  <td className={t.pnl >= 0 ? "perf-positive" : "perf-negative"}>
+                    {t.pnl >= 0 ? "+" : ""}${formatCurrency(t.pnl)}
+                  </td>
+                  <td className={t.pnlPercent >= 0 ? "perf-positive" : "perf-negative"}>
+                    {t.pnlPercent >= 0 ? "+" : ""}{t.pnlPercent}%
+                  </td>
+                  <td>{new Date(t.closedAt).toLocaleDateString("en-US", { timeZone: "America/New_York" })}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
       )}
     </>
   );

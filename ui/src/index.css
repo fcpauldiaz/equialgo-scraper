@@ -673,22 +673,29 @@ input:focus, select:focus {
 }
 
 .perf-bar-cell {
-  width: 4.5rem;
-  min-width: 4.5rem;
+  width: 5rem;
+  min-width: 5rem;
 }
 
-.perf-bar-track {
+.pnl-bar-track {
   height: 6px;
   background: var(--color-paper-3);
   border-radius: 3px;
   overflow: hidden;
 }
 
-.perf-bar-fill {
+.pnl-bar-fill {
   height: 100%;
-  background: var(--color-accent);
   border-radius: 3px;
   transition: width var(--dur-med) var(--ease-out);
+}
+
+.pnl-bar-positive {
+  background: var(--color-positive);
+}
+
+.pnl-bar-negative {
+  background: var(--color-negative);
 }
 
 /* Auth / Login */

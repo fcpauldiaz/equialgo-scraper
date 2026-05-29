@@ -20,14 +20,13 @@ interface WeeklyReportData {
   portfolios: PortfolioSnapshot[];
   monthlyPerformance: {
     month: string;
-    totalTrades: number;
-    successfulTrades: number;
-    failedTrades: number;
-    buyCount: number;
-    sellCount: number;
-    totalBuyValue: number;
-    totalSellValue: number;
-    successRate: number;
+    realizedPnL: number;
+    closedTrades: number;
+    winningTrades: number;
+    losingTrades: number;
+    winRate: number;
+    totalBought: number;
+    totalSold: number;
   }[];
 }
 
@@ -175,15 +174,14 @@ function buildHtmlReport(data: WeeklyReportData): string {
     data.monthlyPerformance.length > 0
       ? `
     <div style="margin-bottom:24px;padding:16px;background:#1a1a1a;border:1px solid #333;border-radius:8px;">
-      <h3 style="margin:0 0 12px;color:#e0e0e0;font-size:16px;">Execution Performance (Last 3 Months)</h3>
+      <h3 style="margin:0 0 12px;color:#e0e0e0;font-size:16px;">Trade Performance (Last 3 Months)</h3>
       <table style="width:100%;border-collapse:collapse;">
         <thead>
           <tr>
             <th style="padding:6px 10px;text-align:left;border-bottom:1px solid #444;color:#888;font-size:11px;text-transform:uppercase;">Month</th>
-            <th style="padding:6px 10px;text-align:right;border-bottom:1px solid #444;color:#888;font-size:11px;text-transform:uppercase;">Trades</th>
-            <th style="padding:6px 10px;text-align:right;border-bottom:1px solid #444;color:#888;font-size:11px;text-transform:uppercase;">Success</th>
-            <th style="padding:6px 10px;text-align:right;border-bottom:1px solid #444;color:#888;font-size:11px;text-transform:uppercase;">Bought</th>
-            <th style="padding:6px 10px;text-align:right;border-bottom:1px solid #444;color:#888;font-size:11px;text-transform:uppercase;">Sold</th>
+            <th style="padding:6px 10px;text-align:right;border-bottom:1px solid #444;color:#888;font-size:11px;text-transform:uppercase;">P&L</th>
+            <th style="padding:6px 10px;text-align:right;border-bottom:1px solid #444;color:#888;font-size:11px;text-transform:uppercase;">Closed</th>
+            <th style="padding:6px 10px;text-align:right;border-bottom:1px solid #444;color:#888;font-size:11px;text-transform:uppercase;">Win Rate</th>
           </tr>
         </thead>
         <tbody>
@@ -192,10 +190,9 @@ function buildHtmlReport(data: WeeklyReportData): string {
               (m) => `
           <tr>
             <td style="padding:6px 10px;border-bottom:1px solid #333;color:#e0e0e0;font-family:monospace;font-size:13px;">${m.month}</td>
-            <td style="padding:6px 10px;border-bottom:1px solid #333;color:#e0e0e0;font-family:monospace;font-size:13px;text-align:right;">${m.totalTrades}</td>
-            <td style="padding:6px 10px;border-bottom:1px solid #333;color:${m.successRate >= 90 ? "#4ade80" : m.successRate < 50 ? "#f87171" : "#fbbf24"};font-family:monospace;font-size:13px;text-align:right;">${m.successRate}%</td>
-            <td style="padding:6px 10px;border-bottom:1px solid #333;color:#e0e0e0;font-family:monospace;font-size:13px;text-align:right;">$${formatCurrency(m.totalBuyValue)}</td>
-            <td style="padding:6px 10px;border-bottom:1px solid #333;color:#e0e0e0;font-family:monospace;font-size:13px;text-align:right;">$${formatCurrency(m.totalSellValue)}</td>
+            <td style="padding:6px 10px;border-bottom:1px solid #333;color:${m.realizedPnL >= 0 ? "#4ade80" : "#f87171"};font-family:monospace;font-size:13px;text-align:right;">${m.realizedPnL >= 0 ? "+" : ""}$${formatCurrency(m.realizedPnL)}</td>
+            <td style="padding:6px 10px;border-bottom:1px solid #333;color:#e0e0e0;font-family:monospace;font-size:13px;text-align:right;">${m.closedTrades}</td>
+            <td style="padding:6px 10px;border-bottom:1px solid #333;color:${m.winRate >= 50 ? "#4ade80" : "#f87171"};font-family:monospace;font-size:13px;text-align:right;">${m.winRate}%</td>
           </tr>`
             )
             .join("")}
@@ -258,11 +255,12 @@ function buildPlainTextReport(data: WeeklyReportData): string {
 
   if (data.monthlyPerformance.length > 0) {
     lines.push("─".repeat(50));
-    lines.push("EXECUTION PERFORMANCE (Last 3 Months)");
+    lines.push("TRADE PERFORMANCE (Last 3 Months)");
     lines.push("");
     for (const m of data.monthlyPerformance) {
+      const sign = m.realizedPnL >= 0 ? "+" : "";
       lines.push(
-        `  ${m.month}  ${m.totalTrades} trades  ${m.successRate}% success  Bought $${formatCurrency(m.totalBuyValue)}  Sold $${formatCurrency(m.totalSellValue)}`
+        `  ${m.month}  P&L: ${sign}$${formatCurrency(m.realizedPnL)}  ${m.closedTrades} closed  ${m.winRate}% win rate`
       );
     }
   }

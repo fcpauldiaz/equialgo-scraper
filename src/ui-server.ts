@@ -11,6 +11,7 @@ import {
   readTradierCredentials,
   updateTradierPortfolioAccountId,
   readMonthlyPerformance,
+  readClosedTrades,
 } from "./state";
 import { startSchwabLoginFlow, handleSchwabCallback } from "./schwab-oauth";
 import {
@@ -481,7 +482,8 @@ export function startUiServer(): http.Server {
             ? portfolioId
             : undefined;
         const performance = await readMonthlyPerformance(validPortfolioId);
-        sendJson(res, 200, performance);
+        const closedTrades = await readClosedTrades(validPortfolioId, 50);
+        sendJson(res, 200, { monthly: performance, closedTrades });
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         sendJson(res, 500, { error: message });
