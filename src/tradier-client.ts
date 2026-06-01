@@ -303,3 +303,37 @@ export async function placeTradierOrder(
   const id = data.order?.id;
   return { orderId: id != null ? String(id) : undefined };
 }
+
+export async function getTradierOrderFillPrice(
+  apiKey: string,
+  accountId: string,
+  sandbox: boolean,
+  orderId: string,
+  maxAttempts = 3,
+  delayMs = 1500
+): Promise<number | null> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+    try {
+      const res = await tradierFetch(
+        apiKey,
+        sandbox,
+        `/v1/accounts/${encodeURIComponent(accountId)}/orders/${encodeURIComponent(orderId)}`
+      );
+      if (!res.ok) continue;
+      const data = await res.json() as { order?: { avg_fill_price?: number; status?: string } };
+      const fillPrice = data.order?.avg_fill_price;
+      if (typeof fillPrice === "number" && fillPrice > 0) {
+        return fillPrice;
+      }
+      if (data.order?.status === "filled") {
+        return fillPrice ?? null;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
