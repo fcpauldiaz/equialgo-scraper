@@ -70,19 +70,27 @@ export function scaleActionsToPortfolioSize(
     (a) => a.action === "BUY" && a.buyKind !== "add"
   );
   const allBuys = actions.filter((a) => a.action === "BUY");
-  const numBuys = enterBuys.length;
-  const allocationPerPosition =
-    numBuys > 0 ? targetPortfolioSize / numBuys : targetPortfolioSize;
+  const allocationPerBuy =
+    allBuys.length > 0
+      ? targetPortfolioSize / allBuys.length
+      : targetPortfolioSize;
+
+  const targetSharesForBuy = (action: PortfolioAction): number => {
+    if (!(action.price > 0)) {
+      return action.buyKind === "add" ? 0 : 1;
+    }
+    const fromSlot = Math.floor(allocationPerBuy / action.price);
+    return action.buyKind === "add"
+      ? Math.max(0, fromSlot)
+      : Math.max(1, fromSlot);
+  };
 
   let modelNotional = 0;
   let proxyScaledBuyNotional = 0;
   for (const a of allBuys) {
     if (a.price > 0 && a.shares > 0) {
       modelNotional += a.shares * a.price;
-      const scaledShares =
-        a.buyKind === "add"
-          ? Math.max(0, Math.floor(a.shares))
-          : Math.max(1, Math.floor(allocationPerPosition / a.price));
+      const scaledShares = targetSharesForBuy(a);
       proxyScaledBuyNotional += scaledShares * a.price;
     }
   }
@@ -100,36 +108,22 @@ export function scaleActionsToPortfolioSize(
   }
 
   let rebalanceShareScale = 1;
-  if (allBuys.length > 0 && modelNotional > 0) {
-    if (enterBuys.length > 0) {
-      rebalanceShareScale = proxyScaledBuyNotional / modelNotional;
-    } else if (rebalanceModelNotional > 0) {
-      rebalanceShareScale = targetPortfolioSize / rebalanceModelNotional;
-    } else {
-      rebalanceShareScale = targetPortfolioSize / modelNotional;
-    }
+  if (rebalanceModelNotional > 0) {
+    rebalanceShareScale = targetPortfolioSize / rebalanceModelNotional;
+  } else if (allBuys.length > 0 && modelNotional > 0) {
+    rebalanceShareScale = targetPortfolioSize / modelNotional;
   }
 
   const scaleMode =
     allBuys.length === 0
-      ? "no_buys"
-      : enterBuys.length > 0
-        ? "scale_from_enter_proxy"
-        : rebalanceModelNotional > 0
-          ? "scale_sleeve_targets_over_model_notional"
-          : "scale_target_over_model_notional";
+      ? rebalanceModelNotional > 0
+        ? "scale_sleeve_targets_over_model_notional"
+        : "no_buys"
+      : "scale_from_buy_slot_proxy";
 
   const initiallyScaledActions = actions.map((action) => {
-    if (action.action === "BUY" && action.buyKind === "add") {
-      const scaled = Math.floor(action.shares * rebalanceShareScale);
-      return { ...action, shares: Math.max(0, scaled) };
-    }
     if (action.action === "BUY") {
-      const shares =
-        action.price > 0
-          ? Math.max(1, Math.floor(allocationPerPosition / action.price))
-          : 1;
-      return { ...action, shares };
+      return { ...action, shares: targetSharesForBuy(action) };
     }
     if (action.action === "SELL" && action.sellKind === "decrease") {
       const scaled = Math.floor(action.shares * rebalanceShareScale);
@@ -148,54 +142,14 @@ export function scaleActionsToPortfolioSize(
 
   const finalActions =
     buyCapScale < 1
-      ? (() => {
-          const enterBuyNotional = initiallyScaledActions
-            .filter(
-              (a) =>
-                a.action === "BUY" &&
-                a.buyKind !== "add" &&
-                a.price > 0 &&
-                a.shares > 0
-            )
-            .reduce((sum, a) => sum + a.shares * a.price, 0);
-          const addBuyNotional = initiallyScaledActions
-            .filter(
-              (a) =>
-                a.action === "BUY" &&
-                a.buyKind === "add" &&
-                a.price > 0 &&
-                a.shares > 0
-            )
-            .reduce((sum, a) => sum + a.shares * a.price, 0);
-          const remainingBudgetForAdds = Math.max(
-            0,
-            targetPortfolioSize - enterBuyNotional
+      ? initiallyScaledActions.map((action) => {
+          if (action.action !== "BUY") return action;
+          const cappedShares = Math.max(
+            action.buyKind !== "add" ? 1 : 0,
+            Math.floor(action.shares * buyCapScale)
           );
-          const addCapScale =
-            addBuyNotional > 0
-              ? Math.min(1, remainingBudgetForAdds / addBuyNotional)
-              : 1;
-
-          if (enterBuyNotional <= targetPortfolioSize) {
-            return initiallyScaledActions.map((action) => {
-              if (action.action !== "BUY") return action;
-              if (action.buyKind !== "add") return action;
-              const cappedShares = Math.max(
-                0,
-                Math.floor(action.shares * addCapScale)
-              );
-              return { ...action, shares: cappedShares };
-            });
-          }
-          return initiallyScaledActions.map((action) => {
-            if (action.action !== "BUY") return action;
-            const cappedShares = Math.max(
-              action.buyKind !== "add" ? 1 : 0,
-              Math.floor(action.shares * buyCapScale)
-            );
-            return { ...action, shares: cappedShares };
-          });
-        })()
+          return { ...action, shares: cappedShares };
+        })
       : initiallyScaledActions;
 
   const finalScaledBuyNotional = finalActions
@@ -203,16 +157,9 @@ export function scaleActionsToPortfolioSize(
     .reduce((sum, a) => sum + a.shares * a.price, 0);
 
   if (buyCapScale < 1) {
-    const enterNotional = finalActions
-      .filter((a) => a.action === "BUY" && a.buyKind !== "add" && a.price > 0 && a.shares > 0)
-      .reduce((sum, a) => sum + a.shares * a.price, 0);
-    const addNotional = finalActions
-      .filter((a) => a.action === "BUY" && a.buyKind === "add" && a.price > 0 && a.shares > 0)
-      .reduce((sum, a) => sum + a.shares * a.price, 0);
     console.warn(
       `[scale] buy notional exceeded target ($${initiallyScaledBuyNotional.toFixed(2)} > $${targetPortfolioSize.toFixed(2)}); ` +
-        `enters preserved=$${enterNotional.toFixed(2)}, adds capped=$${addNotional.toFixed(2)}, ` +
-        `final total=$${finalScaledBuyNotional.toFixed(2)}`
+        `uniform cap scale=${buyCapScale.toFixed(8)}, final total=$${finalScaledBuyNotional.toFixed(2)}`
     );
   }
 
@@ -228,7 +175,7 @@ export function scaleActionsToPortfolioSize(
 
   console.log(
     `[scale] targetPortfolioSize=$${targetPortfolioSize.toFixed(2)} enterBuyRows=${enterBuys.length} ` +
-      `allBuyRows=${allBuys.length} rebalanceRows=${rebalanceRows.length} allocationPerEnter=$${allocationPerPosition.toFixed(2)} ` +
+      `allBuyRows=${allBuys.length} rebalanceRows=${rebalanceRows.length} allocationPerBuy=$${allocationPerBuy.toFixed(2)} ` +
       `modelBuyNotional=$${modelNotional.toFixed(2)} rebalanceModelNotional=$${rebalanceModelNotional.toFixed(2)} ` +
       `proxyScaledBuyNotional=$${proxyScaledBuyNotional.toFixed(2)} rebalanceShareScale=${rebalanceShareScale.toFixed(8)} ` +
       `buyCapScale=${buyCapScale.toFixed(8)} initialScaledBuyNotional=$${initiallyScaledBuyNotional.toFixed(2)} ` +

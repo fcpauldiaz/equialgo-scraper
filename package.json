@@ -10,7 +10,8 @@
     "weekly-report": "node dist/scripts/weekly-report.js",
     "dev": "tsc && node dist/index.js",
     "schwab-login": "node dist/scripts/schwab-login.js",
-    "verify:schwab": "node -e \"require('dotenv').config(); require('./dist/trader').verifySchwabConnection(1).then(r => { if (r.ok) { console.log('Schwab API: OK', r.positionsCount !== undefined ? '(' + r.positionsCount + ' positions)' : ''); } else { console.error('Schwab API: FAILED -', r.message); process.exit(1); } }).catch(e => { console.error('Error:', e.message); process.exit(1); })\""
+    "verify:schwab": "node -e \"require('dotenv').config(); require('./dist/trader').verifySchwabConnection(1).then(r => { if (r.ok) { console.log('Schwab API: OK', r.positionsCount !== undefined ? '(' + r.positionsCount + ' positions)' : ''); } else { console.error('Schwab API: FAILED -', r.message); process.exit(1); } }).catch(e => { console.error('Error:', e.message); process.exit(1); })\"",
+    "verify:scale": "tsc && node dist/scripts/verify-scale.js"
   },
   "keywords": [],
   "author": "",
