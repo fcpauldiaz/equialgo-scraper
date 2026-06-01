@@ -16,6 +16,7 @@ import {
   getTradierAccountExposure,
   getTradierPositions,
   placeTradierOrder,
+  getTradierOrderFillPrice,
 } from "./tradier-client";
 import {
   ProcessedSignals,
@@ -732,11 +733,18 @@ async function placeBuyOrder(
         price,
         TRADIER_ORDER_TYPE
       );
+      let fillPrice = price;
+      if (orderId) {
+        const actualFill = await getTradierOrderFillPrice(
+          creds.apiKey, accountId, creds.sandbox, orderId
+        );
+        if (actualFill != null) fillPrice = actualFill;
+      }
       return {
         symbol,
         action: "BUY",
         shares,
-        price,
+        price: fillPrice,
         success: true,
         orderId,
       };
@@ -890,11 +898,18 @@ async function placeSellOrder(
         price,
         TRADIER_ORDER_TYPE
       );
+      let fillPrice = price;
+      if (orderId) {
+        const actualFill = await getTradierOrderFillPrice(
+          creds.apiKey, accountId, creds.sandbox, orderId
+        );
+        if (actualFill != null) fillPrice = actualFill;
+      }
       return {
         symbol,
         action: "SELL",
         shares,
-        price,
+        price: fillPrice,
         success: true,
         orderId,
       };
