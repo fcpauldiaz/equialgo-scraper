@@ -1,13 +1,14 @@
 import { scrapePortfolioData } from "./scraper";
 import { processedSignalsFromActions, scaleActionsToPortfolioSize } from "./processor";
 import { sendNotification } from "./notifier";
-import { executeTradesFromActions } from "./trader";
+import { executeTradesFromActions, getPositionsWithCostBasis } from "./trader";
 import {
   shouldProcess,
   listTradingPortfolioTargets,
   resolveEffectiveSystemTraderPortfolioUrl,
   writePortfolioProcessedState,
   persistTradeExecutions,
+  backfillMissingBuyRecords,
   type TradeExecutionRecord,
 } from "./state";
 import type { PortfolioAction, ScrapedPortfolioData } from "./types";
@@ -175,6 +176,17 @@ export async function runCheck(options: RunCheckOptions = {}): Promise<RunCheckR
       }
 
       console.log(`Portfolio ${portfolioId}: processing ${signalDate} (${slug})`);
+
+      try {
+        const positionsWithCost = await getPositionsWithCostBasis(portfolioId);
+        const backfilled = await backfillMissingBuyRecords(portfolioId, slug, positionsWithCost);
+        if (backfilled > 0) {
+          console.log(`Portfolio ${portfolioId}: backfilled ${backfilled} missing BUY record(s) from brokerage cost basis`);
+        }
+      } catch (bfErr) {
+        const msg = bfErr instanceof Error ? bfErr.message : String(bfErr);
+        console.warn(`Portfolio ${portfolioId}: cost basis backfill skipped:`, msg);
+      }
 
       let tradeSummary;
       try {

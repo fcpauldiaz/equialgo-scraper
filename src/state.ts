@@ -1007,6 +1007,47 @@ export async function persistTradeExecutions(
   }
 }
 
+export interface PositionCostBasis {
+  symbol: string;
+  shares: number;
+  costBasisPerShare: number;
+}
+
+export async function backfillMissingBuyRecords(
+  portfolioId: number,
+  strategySlug: string,
+  positions: PositionCostBasis[]
+): Promise<number> {
+  if (positions.length === 0) return 0;
+  const db = getClient();
+  let backfilled = 0;
+
+  for (const pos of positions) {
+    const existing = await db.execute(
+      `SELECT COALESCE(SUM(CASE WHEN action = 'BUY' THEN shares ELSE 0 END), 0) -
+              COALESCE(SUM(CASE WHEN action = 'SELL' THEN shares ELSE 0 END), 0) AS net_shares
+       FROM trade_executions
+       WHERE portfolio_id = ? AND symbol = ? AND success = 1`,
+      [portfolioId, pos.symbol]
+    );
+    const row = existing.rows[0] as { net_shares?: number } | undefined;
+    const netRecorded = Number(row?.net_shares) || 0;
+
+    const unrecordedShares = pos.shares - Math.max(0, netRecorded);
+    if (unrecordedShares <= 0) continue;
+
+    const syntheticTs = Date.now() - 90 * 86400000;
+    await db.execute(
+      `INSERT INTO trade_executions (portfolio_id, strategy_slug, symbol, action, shares, price, success, order_id, error, executed_at)
+       VALUES (?, ?, ?, 'BUY', ?, ?, 1, NULL, NULL, ?)`,
+      [portfolioId, strategySlug, pos.symbol, unrecordedShares, pos.costBasisPerShare, syntheticTs]
+    );
+    backfilled++;
+  }
+
+  return backfilled;
+}
+
 export interface MonthlyPerformance {
   month: string;
   realizedPnL: number;

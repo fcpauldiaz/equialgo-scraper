@@ -667,6 +667,26 @@ export type PortfolioPosition = {
   marketValue?: number;
 };
 
+export async function getPositionsWithCostBasis(
+  portfolioId: number
+): Promise<{ symbol: string; shares: number; costBasisPerShare: number }[]> {
+  const brokerage = await getPortfolioBrokerage(portfolioId);
+  if (brokerage === "tradier") {
+    const creds = await readTradierCredentials(portfolioId);
+    if (!creds) return [];
+    const accountId = await resolveTradierAccountId(portfolioId, creds);
+    const positions = await getTradierPositions(creds.apiKey, accountId, creds.sandbox);
+    return positions
+      .filter((p) => p.costBasis != null && p.longQuantity > 0)
+      .map((p) => ({
+        symbol: p.symbol,
+        shares: p.longQuantity,
+        costBasisPerShare: p.costBasis! / p.longQuantity,
+      }));
+  }
+  return [];
+}
+
 export async function getPortfolioPositions(
   portfolioId: number
 ): Promise<PortfolioPosition[]> {
