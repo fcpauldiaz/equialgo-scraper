@@ -175,6 +175,8 @@ export async function getTradierAccountId(
 interface TradierPositionItem {
   symbol?: string;
   quantity?: number;
+  cost_basis?: number;
+  date_acquired?: string;
 }
 
 interface TradierPositionsResponse {
@@ -193,6 +195,8 @@ interface TradierBalancesResponse {
 export interface TradierPosition {
   symbol: string;
   longQuantity: number;
+  costBasis?: number;
+  dateAcquired?: string;
 }
 
 export async function getTradierPositions(
@@ -220,7 +224,9 @@ export async function getTradierPositions(
     const symbol = p?.symbol?.trim();
     const qty = Number(p?.quantity);
     if (symbol && !Number.isNaN(qty) && qty > 0) {
-      out.push({ symbol, longQuantity: Math.floor(qty) });
+      const costBasis = typeof p.cost_basis === "number" ? p.cost_basis : undefined;
+      const dateAcquired = typeof p.date_acquired === "string" ? p.date_acquired : undefined;
+      out.push({ symbol, longQuantity: Math.floor(qty), costBasis, dateAcquired });
     }
   }
   return out;
