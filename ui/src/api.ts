@@ -291,9 +291,24 @@ export interface ClosedTrade {
   closedAt: number;
 }
 
+export interface StrategyMonthlyPnL {
+  month: string;
+  pnl: number;
+  cumulativePnL: number;
+}
+
+export interface StrategyPerformance {
+  strategy: string;
+  realizedPnL: number;
+  closedTrades: number;
+  winRate: number;
+  monthlyPnL: StrategyMonthlyPnL[];
+}
+
 export interface PerformanceData {
   monthly: MonthlyPerformance[];
   closedTrades: ClosedTrade[];
+  byStrategy: StrategyPerformance[];
 }
 
 export async function fetchPerformance(

@@ -22,6 +22,7 @@ import {
   SYSTEMTRADER_STRATEGY_SLUGS,
   type PortfolioItem,
   type MonthlyPerformance,
+  type StrategyPerformance,
   type TradierAccountChoice,
 } from "./api";
 
@@ -938,6 +939,75 @@ function formatCurrency(value: number): string {
   });
 }
 
+function StrategyChart({ strategy }: { strategy: StrategyPerformance }) {
+  const points = strategy.monthlyPnL;
+  if (points.length < 2) return null;
+
+  const width = 680;
+  const height = 140;
+  const padX = 48;
+  const padY = 24;
+  const chartW = width - padX * 2;
+  const chartH = height - padY * 2;
+
+  const values = points.map((p) => p.cumulativePnL);
+  const maxVal = Math.max(...values, 0);
+  const minVal = Math.min(...values, 0);
+  const range = maxVal - minVal || 1;
+
+  const toX = (i: number) => padX + (i / (points.length - 1)) * chartW;
+  const toY = (v: number) => padY + ((maxVal - v) / range) * chartH;
+
+  const zeroY = toY(0);
+  const pathD = points
+    .map((p, i) => `${i === 0 ? "M" : "L"} ${toX(i).toFixed(1)} ${toY(p.cumulativePnL).toFixed(1)}`)
+    .join(" ");
+
+  const lastVal = values[values.length - 1];
+  const lineColor = lastVal >= 0 ? "var(--color-positive)" : "var(--color-negative)";
+
+  return (
+    <div className="strategy-chart">
+      <h3 className="strategy-chart-title">
+        {strategy.strategy}
+        <span className={lastVal >= 0 ? "perf-positive" : "perf-negative"}>
+          {lastVal >= 0 ? "+" : ""}${formatCurrency(lastVal)}
+        </span>
+      </h3>
+      <svg viewBox={`0 0 ${width} ${height}`} className="strategy-chart-svg">
+        <line
+          x1={padX} y1={zeroY} x2={width - padX} y2={zeroY}
+          stroke="var(--color-rule)" strokeWidth="1" strokeDasharray="4 3"
+        />
+        {points.map((_, i) => (
+          <line key={i} x1={toX(i)} y1={padY} x2={toX(i)} y2={height - padY}
+            stroke="var(--color-rule)" strokeWidth="0.5" opacity="0.3"
+          />
+        ))}
+        <path d={pathD} fill="none" stroke={lineColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        {points.map((p, i) => (
+          <circle key={i} cx={toX(i)} cy={toY(p.cumulativePnL)} r="3"
+            fill={p.cumulativePnL >= 0 ? "var(--color-positive)" : "var(--color-negative)"}
+          />
+        ))}
+        {points.map((p, i) => (
+          <text key={`lbl-${i}`} x={toX(i)} y={height - 4}
+            textAnchor="middle" fill="var(--color-ink-2)" fontSize="9"
+          >
+            {p.month.slice(5)}
+          </text>
+        ))}
+        <text x={padX - 4} y={padY + 3} textAnchor="end" fill="var(--color-ink-2)" fontSize="9">
+          +${formatCurrency(maxVal)}
+        </text>
+        <text x={padX - 4} y={height - padY + 3} textAnchor="end" fill="var(--color-ink-2)" fontSize="9">
+          {minVal < 0 ? `-$${formatCurrency(Math.abs(minVal))}` : "$0"}
+        </text>
+      </svg>
+    </div>
+  );
+}
+
 function PnLBar({ value, max }: { value: number; max: number }) {
   if (max === 0) return null;
   const pct = Math.min(100, (Math.abs(value) / max) * 100);
@@ -962,6 +1032,7 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
 
   const monthly = data?.monthly ?? [];
   const closedTrades = data?.closedTrades ?? [];
+  const byStrategy = data?.byStrategy ?? [];
 
   const totals = monthly.reduce(
     (acc, m) => ({
@@ -1076,6 +1147,40 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
               ))}
             </tbody>
           </table>
+        </>
+      )}
+
+      {byStrategy.length > 0 && (
+        <>
+          <h2>Performance by Strategy</h2>
+          <table className="perf-table">
+            <thead>
+              <tr>
+                <th>Strategy</th>
+                <th>P&L</th>
+                <th>Trades</th>
+                <th>Win Rate</th>
+              </tr>
+            </thead>
+            <tbody>
+              {byStrategy.map((s: StrategyPerformance) => (
+                <tr key={s.strategy}>
+                  <td className="perf-month">{s.strategy}</td>
+                  <td className={s.realizedPnL >= 0 ? "perf-positive" : "perf-negative"}>
+                    {s.realizedPnL >= 0 ? "+" : ""}${formatCurrency(s.realizedPnL)}
+                  </td>
+                  <td>{s.closedTrades}</td>
+                  <td className={s.winRate >= 50 ? "perf-positive" : "perf-negative"}>
+                    {s.winRate}%
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {byStrategy.filter((s) => s.monthlyPnL.length > 1).map((s) => (
+            <StrategyChart key={s.strategy} strategy={s} />
+          ))}
         </>
       )}
 
