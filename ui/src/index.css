@@ -698,6 +698,38 @@ input:focus, select:focus {
   background: var(--color-negative);
 }
 
+/* Strategy Charts */
+
+.strategy-chart {
+  margin: var(--space-md) 0;
+  padding: var(--space-sm);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-card);
+  background: var(--color-paper-2);
+}
+
+.strategy-chart-title {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-ink);
+  margin: 0 0 var(--space-xs);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  text-transform: capitalize;
+}
+
+.strategy-chart-title span {
+  font-size: var(--text-sm);
+}
+
+.strategy-chart-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
 /* Auth / Login */
 
 .nav-auth {

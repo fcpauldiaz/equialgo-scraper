@@ -1159,6 +1159,107 @@ export async function readMonthlyPerformance(
   return months;
 }
 
+export interface StrategyPerformance {
+  strategy: string;
+  realizedPnL: number;
+  closedTrades: number;
+  winRate: number;
+  monthlyPnL: { month: string; pnl: number; cumulativePnL: number }[];
+}
+
+export async function readPerformanceByStrategy(
+  portfolioId?: number
+): Promise<StrategyPerformance[]> {
+  const db = getClient();
+  const filter = portfolioId != null ? "AND portfolio_id = ?" : "";
+  const params = portfolioId != null ? [portfolioId] : [];
+
+  const buysResult = await db.execute(
+    `SELECT portfolio_id, strategy_slug, symbol, shares, price, executed_at
+     FROM trade_executions
+     WHERE action = 'BUY' AND success = 1 ${filter}
+     ORDER BY executed_at ASC`,
+    params
+  );
+
+  const sellsResult = await db.execute(
+    `SELECT portfolio_id, strategy_slug, symbol, shares, price, executed_at
+     FROM trade_executions
+     WHERE action = 'SELL' AND success = 1 ${filter}
+     ORDER BY executed_at ASC`,
+    params
+  );
+
+  type BuyLot = { shares: number; price: number };
+  const lotsByKey = new Map<string, BuyLot[]>();
+  for (const row of buysResult.rows as unknown as {
+    portfolio_id: number; strategy_slug: string; symbol: string; shares: number; price: number;
+  }[]) {
+    const key = `${row.portfolio_id}:${row.symbol}`;
+    const lots = lotsByKey.get(key) ?? [];
+    lots.push({ shares: Number(row.shares), price: Number(row.price) });
+    lotsByKey.set(key, lots);
+  }
+
+  type StrategyTrade = { pnl: number; closedAt: number };
+  const tradesByStrategy = new Map<string, StrategyTrade[]>();
+
+  for (const row of sellsResult.rows as unknown as {
+    portfolio_id: number; strategy_slug: string; symbol: string; shares: number; price: number; executed_at: number;
+  }[]) {
+    const key = `${row.portfolio_id}:${row.symbol}`;
+    const lots = lotsByKey.get(key) ?? [];
+    let remaining = Number(row.shares);
+    let costBasis = 0;
+    let matched = 0;
+    while (remaining > 0 && lots.length > 0) {
+      const lot = lots[0];
+      const take = Math.min(remaining, lot.shares);
+      costBasis += take * lot.price;
+      matched += take;
+      remaining -= take;
+      lot.shares -= take;
+      if (lot.shares <= 0) lots.shift();
+    }
+    if (matched > 0) {
+      const pnl = (Number(row.price) - costBasis / matched) * matched;
+      const slug = row.strategy_slug || "unknown";
+      const trades = tradesByStrategy.get(slug) ?? [];
+      trades.push({ pnl, closedAt: Number(row.executed_at) });
+      tradesByStrategy.set(slug, trades);
+    }
+  }
+
+  const results: StrategyPerformance[] = [];
+  for (const [strategy, trades] of tradesByStrategy.entries()) {
+    const totalPnL = trades.reduce((s, t) => s + t.pnl, 0);
+    const wins = trades.filter((t) => t.pnl >= 0).length;
+    const winRate = trades.length > 0 ? Math.round((wins / trades.length) * 1000) / 10 : 0;
+
+    const monthlyMap = new Map<string, number>();
+    for (const t of trades) {
+      const month = new Date(t.closedAt).toISOString().slice(0, 7);
+      monthlyMap.set(month, (monthlyMap.get(month) ?? 0) + t.pnl);
+    }
+    const sortedMonths = Array.from(monthlyMap.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    let cumulative = 0;
+    const monthlyPnL = sortedMonths.map(([month, pnl]) => {
+      cumulative += pnl;
+      return { month, pnl: Math.round(pnl * 100) / 100, cumulativePnL: Math.round(cumulative * 100) / 100 };
+    });
+
+    results.push({
+      strategy,
+      realizedPnL: Math.round(totalPnL * 100) / 100,
+      closedTrades: trades.length,
+      winRate,
+      monthlyPnL,
+    });
+  }
+
+  return results.sort((a, b) => b.realizedPnL - a.realizedPnL);
+}
+
 export async function readClosedTrades(
   portfolioId?: number,
   limit = 50
