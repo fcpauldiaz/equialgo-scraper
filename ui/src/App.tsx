@@ -941,7 +941,7 @@ function formatCurrency(value: number): string {
 
 function StrategyChart({ strategy }: { strategy: StrategyPerformance }) {
   const points = strategy.monthlyPnL;
-  if (points.length < 2) return null;
+  if (points.length === 0) return null;
 
   const width = 680;
   const height = 140;
@@ -955,7 +955,7 @@ function StrategyChart({ strategy }: { strategy: StrategyPerformance }) {
   const minVal = Math.min(...values, 0);
   const range = maxVal - minVal || 1;
 
-  const toX = (i: number) => padX + (i / (points.length - 1)) * chartW;
+  const toX = (i: number) => points.length === 1 ? padX + chartW / 2 : padX + (i / (points.length - 1)) * chartW;
   const toY = (v: number) => padY + ((maxVal - v) / range) * chartH;
 
   const zeroY = toY(0);
@@ -1178,7 +1178,7 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
             </tbody>
           </table>
 
-          {byStrategy.filter((s) => s.monthlyPnL.length > 1).map((s) => (
+          {byStrategy.filter((s) => s.monthlyPnL.length > 0).map((s) => (
             <StrategyChart key={s.strategy} strategy={s} />
           ))}
         </>
