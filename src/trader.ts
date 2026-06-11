@@ -1457,6 +1457,14 @@ export async function executeTradesFromActions(
       continue;
     }
 
+    if (isAdd && held <= 0) {
+      summary.skipped.push({
+        symbol: action.symbol,
+        reason: "INCREASE skipped: no existing position to add to",
+      });
+      continue;
+    }
+
     const targetShares = targetSharesFromAction(action);
     const idealShares = useTargetRebalance
       ? buyGapToTargetShares(targetShares, held)
