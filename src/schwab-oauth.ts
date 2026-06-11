@@ -1,6 +1,7 @@
 import * as https from "https";
 // @ts-ignore - no types
 import selfsigned from "selfsigned";
+import { renderSchwabOAuthPage } from "./schwab-oauth-page";
 import { writeSchwabCredentials } from "./state";
 import { clearSchwabCachesForPortfolio } from "./trader";
 
@@ -10,10 +11,70 @@ const HOST = "127.0.0.1";
 
 const DEFAULT_REDIRECT_URI = `https://${HOST}:${REDIRECT_PORT}${REDIRECT_PATH}`;
 
+/** OAuth callback path served by the UI server (must match Schwab app registration). */
+export const SCHWAB_CANONICAL_CALLBACK_PATH = "/callback";
+
 let loginInProgress = false;
 let pendingResolveFlowComplete: (() => void) | null = null;
 let pendingPortfolioId: number | null = null;
+let pendingRedirectUri: string | null = null;
 let localCallbackServer: https.Server | null = null;
+
+function normalizePathname(pathname: string): string {
+  if (pathname.length > 1 && pathname.endsWith("/")) {
+    return pathname.slice(0, -1);
+  }
+  return pathname;
+}
+
+export function resolveSchwabRedirectUri(publicOrigin?: string): string {
+  const fromEnv = process.env.SCHWAB_REDIRECT_URI?.trim();
+  if (fromEnv) return fromEnv;
+  const origin = publicOrigin?.trim().replace(/\/+$/, "");
+  if (origin) return `${origin}${SCHWAB_CANONICAL_CALLBACK_PATH}`;
+  return DEFAULT_REDIRECT_URI;
+}
+
+function isRemoteSchwabRedirectUri(redirectUri: string): boolean {
+  try {
+    const { hostname } = new URL(redirectUri);
+    return hostname !== HOST && hostname !== "localhost";
+  } catch {
+    return redirectUri !== DEFAULT_REDIRECT_URI;
+  }
+}
+
+export function schwabCallbackPathnames(): string[] {
+  const paths = new Set<string>([
+    normalizePathname(SCHWAB_CANONICAL_CALLBACK_PATH),
+    normalizePathname(REDIRECT_PATH),
+  ]);
+  const override = process.env.SCHWAB_CALLBACK_INCOMING_PATH?.trim();
+  if (override) {
+    paths.add(
+      normalizePathname(override.startsWith("/") ? override : `/${override}`)
+    );
+  }
+  const fromEnv = process.env.SCHWAB_REDIRECT_URI?.trim();
+  if (fromEnv) {
+    try {
+      paths.add(normalizePathname(new URL(fromEnv).pathname));
+    } catch {
+      // ignore invalid SCHWAB_REDIRECT_URI
+    }
+  }
+  return Array.from(paths);
+}
+
+export function isSchwabCallbackPathname(pathname: string): boolean {
+  const normalized = normalizePathname(pathname);
+  return schwabCallbackPathnames().includes(normalized);
+}
+
+function clearPendingRemoteFlow(): void {
+  pendingPortfolioId = null;
+  pendingRedirectUri = null;
+}
 
 function closeExistingLocalCallbackServer(): Promise<void> {
   const s = localCallbackServer;
@@ -33,8 +94,14 @@ export interface StartSchwabLoginResult {
   flowComplete: Promise<void>;
 }
 
+export interface StartSchwabLoginOptions {
+  /** Public site origin, e.g. https://equialgo.example.com (from reverse-proxy headers). */
+  publicOrigin?: string;
+}
+
 export async function startSchwabLoginFlow(
-  portfolioId: number
+  portfolioId: number,
+  options?: StartSchwabLoginOptions
 ): Promise<StartSchwabLoginResult> {
   if (loginInProgress) {
     pendingResolveFlowComplete?.();
@@ -51,12 +118,15 @@ export async function startSchwabLoginFlow(
   }
 
   const envRedirectUri = process.env.SCHWAB_REDIRECT_URI?.trim();
-  const useRemoteCallback = Boolean(envRedirectUri);
-  const redirectUri = useRemoteCallback ? envRedirectUri : DEFAULT_REDIRECT_URI;
-  const redirectLabel = useRemoteCallback && redirectUri
+  const redirectUri = resolveSchwabRedirectUri(options?.publicOrigin);
+  const useRemoteCallback = isRemoteSchwabRedirectUri(redirectUri);
+  const redirectLabel = useRemoteCallback
     ? "remote (" + new URL(redirectUri).origin + ")"
     : "local (127.0.0.1:" + REDIRECT_PORT + ")";
-  console.log(`[Schwab OAuth] Starting login flow for portfolio ${portfolioId}, redirectUri=${redirectLabel}`);
+  console.log(
+    `[Schwab OAuth] Starting login flow for portfolio ${portfolioId}, redirectUri=${redirectLabel}` +
+      (envRedirectUri ? "" : options?.publicOrigin ? " (auto from request origin)" : "")
+  );
 
   const attrs = [{ name: "commonName", value: HOST }];
   const pems = await selfsigned.generate(attrs, {
@@ -106,10 +176,16 @@ export async function startSchwabLoginFlow(
 
   if (useRemoteCallback) {
     pendingPortfolioId = portfolioId;
-    console.log("[Schwab OAuth] Using remote callback; pendingPortfolioId set to", portfolioId);
+    pendingRedirectUri = redirectUri;
+    console.log(
+      "[Schwab OAuth] Using remote callback; pendingPortfolioId=",
+      portfolioId,
+      "redirectUri=",
+      redirectUri
+    );
     pendingResolveFlowComplete = () => {
       loginInProgress = false;
-      pendingPortfolioId = null;
+      clearPendingRemoteFlow();
       resolveFlowComplete();
       pendingResolveFlowComplete = null;
     };
@@ -144,7 +220,15 @@ export async function startSchwabLoginFlow(
       resolveFlowComplete();
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(
-        `<html><body><h1>Login failed</h1><p>Error: ${errorParam}</p><p>${url.searchParams.get("error_description") || ""}</p><script>if (window.opener) window.opener.postMessage({ type: 'schwab-login-done', success: false }, '*');</script></body></html>`
+        renderSchwabOAuthPage({
+          variant: "error",
+          title: "Login failed",
+          message: "Schwab returned an error during authorization.",
+          detail: [errorParam, url.searchParams.get("error_description") ?? ""]
+            .filter(Boolean)
+            .join(" — "),
+          notifySuccess: false,
+        })
       );
       server.close();
       return;
@@ -154,10 +238,16 @@ export async function startSchwabLoginFlow(
       console.warn("[Schwab OAuth] Local callback: missing code in URL");
       loginInProgress = false;
       resolveFlowComplete();
-      const tip = `Make sure your Schwab app's Callback URL is exactly: <strong>${redirectUri}</strong> (no trailing slash, correct port).`;
+      const tip = `Callback URL must be exactly: ${redirectUri} (no trailing slash, correct port).`;
       res.writeHead(400, { "Content-Type": "text/html" });
       res.end(
-        `<html><body><h1>Missing code</h1><p>No authorization code in callback URL.</p><p>${tip}</p><script>if (window.opener) window.opener.postMessage({ type: 'schwab-login-done', success: false }, '*');</script></body></html>`
+        renderSchwabOAuthPage({
+          variant: "error",
+          title: "Missing code",
+          message: "No authorization code was returned in the callback URL.",
+          detail: tip,
+          notifySuccess: false,
+        })
       );
       server.close();
       return;
@@ -169,7 +259,12 @@ export async function startSchwabLoginFlow(
       resolveFlowComplete();
       res.writeHead(400, { "Content-Type": "text/html" });
       res.end(
-        `<html><body><h1>Invalid state</h1><p>Could not determine portfolio.</p><script>if (window.opener) window.opener.postMessage({ type: 'schwab-login-done', success: false }, '*');</script></body></html>`
+        renderSchwabOAuthPage({
+          variant: "error",
+          title: "Invalid state",
+          message: "Could not determine which portfolio to link.",
+          notifySuccess: false,
+        })
       );
       server.close();
       return;
@@ -228,15 +323,26 @@ export async function startSchwabLoginFlow(
 
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(
-        `<html><body style="font-family:sans-serif;max-width:480px;margin:2em auto;padding:1em;"><h1 style="color:green;">✅ Success</h1><p>Credentials saved for this portfolio.</p><p>You can close this tab.</p><script>if (window.opener) window.opener.postMessage({ type: 'schwab-login-done', success: true }, '*');</script></body></html>`
+        renderSchwabOAuthPage({
+          variant: "success",
+          title: "Connected",
+          message: "Schwab credentials were saved for this portfolio.",
+          notifySuccess: true,
+        })
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[Schwab OAuth] Local callback: token exchange failed", msg);
-      const redirectTip = `Your Schwab app Callback URL must be exactly: <strong>${redirectUri}</strong> (no trailing slash).`;
+      const redirectTip = `Schwab app callback URL must be exactly: ${redirectUri} (no trailing slash).`;
       res.writeHead(500, { "Content-Type": "text/html" });
       res.end(
-        `<html><body style="font-family:sans-serif;max-width:520px;margin:2em auto;padding:1em;"><h1 style="color:red;">Token exchange failed</h1><p>${msg}</p><p>${redirectTip}</p><script>if (window.opener) window.opener.postMessage({ type: 'schwab-login-done', success: false }, '*');</script></body></html>`
+        renderSchwabOAuthPage({
+          variant: "error",
+          title: "Token exchange failed",
+          message: "Could not complete Schwab authorization.",
+          detail: `${msg}\n\n${redirectTip}`,
+          notifySuccess: false,
+        })
       );
     } finally {
       loginInProgress = false;
@@ -266,9 +372,6 @@ export async function startSchwabLoginFlow(
   });
 }
 
-const POST_SCRIPT =
-  '<script>if (window.opener) window.opener.postMessage({ type: \'schwab-login-done\', success: false }, \'*\');</script>';
-
 export interface HandleSchwabCallbackParams {
   code: string | null;
   state: string | null;
@@ -287,17 +390,26 @@ export async function handleSchwabCallback(
     "[Schwab OAuth] Remote callback received",
     { hasCode: Boolean(params.code), stateLength: params.state?.length ?? 0, error: params.error ?? null }
   );
-  const redirectUri = process.env.SCHWAB_REDIRECT_URI?.trim();
+  const redirectUri =
+    process.env.SCHWAB_REDIRECT_URI?.trim() || pendingRedirectUri?.trim() || "";
   if (!redirectUri) {
-    console.warn("[Schwab OAuth] Remote callback: SCHWAB_REDIRECT_URI not set");
+    console.warn("[Schwab OAuth] Remote callback: no redirect URI (env or pending flow)");
     return {
-      html: `<html><body><h1>Configuration error</h1><p>SCHWAB_REDIRECT_URI is not set. Use this callback only when running with a custom redirect URI.</p>${POST_SCRIPT}</body></html>`,
+      html: renderSchwabOAuthPage({
+        variant: "error",
+        title: "Configuration error",
+        message: "Could not determine the Schwab callback URL for token exchange.",
+        detail:
+          "Set SCHWAB_REDIRECT_URI on the server, or start authorization from the EquiAlgo dashboard (not a stale tab).",
+        notifySuccess: false,
+      }),
     };
   }
 
   const resolveFlow = () => {
     pendingResolveFlowComplete?.();
     pendingResolveFlowComplete = null;
+    clearPendingRemoteFlow();
     loginInProgress = false;
   };
 
@@ -305,16 +417,28 @@ export async function handleSchwabCallback(
     console.warn("[Schwab OAuth] Remote callback: OAuth error", params.error, params.error_description ?? "");
     resolveFlow();
     return {
-      html: `<html><body><h1>Login failed</h1><p>Error: ${params.error}</p><p>${params.error_description ?? ""}</p>${POST_SCRIPT}</body></html>`,
+      html: renderSchwabOAuthPage({
+        variant: "error",
+        title: "Login failed",
+        message: "Schwab returned an error during authorization.",
+        detail: [params.error, params.error_description ?? ""].filter(Boolean).join(" — "),
+        notifySuccess: false,
+      }),
     };
   }
 
   if (!params.code) {
     console.warn("[Schwab OAuth] Remote callback: missing code");
     resolveFlow();
-    const tip = `Callback URL must be exactly: <strong>${redirectUri}</strong> (no trailing slash).`;
+    const tip = `Callback URL must be exactly: ${redirectUri} (no trailing slash).`;
     return {
-      html: `<html><body><h1>Missing code</h1><p>No authorization code in callback URL.</p><p>${tip}</p>${POST_SCRIPT}</body></html>`,
+      html: renderSchwabOAuthPage({
+        variant: "error",
+        title: "Missing code",
+        message: "No authorization code was returned in the callback URL.",
+        detail: tip,
+        notifySuccess: false,
+      }),
     };
   }
 
@@ -327,7 +451,13 @@ export async function handleSchwabCallback(
     console.warn("[Schwab OAuth] Remote callback: could not resolve portfolio (state not numeric, no pendingPortfolioId)");
     resolveFlow();
     return {
-      html: `<html><body><h1>Invalid state</h1><p>Could not determine portfolio. The OAuth provider may have overwritten the state parameter. Try Re-authorize again.</p>${POST_SCRIPT}</body></html>`,
+      html: renderSchwabOAuthPage({
+        variant: "error",
+        title: "Invalid state",
+        message: "Could not determine which portfolio to link.",
+        detail: "Try Re-authorize again from the EquiAlgo dashboard.",
+        notifySuccess: false,
+      }),
     };
   }
 
@@ -337,7 +467,13 @@ export async function handleSchwabCallback(
     console.warn("[Schwab OAuth] Remote callback: SCHWAB_CLIENT_ID or SCHWAB_CLIENT_SECRET missing");
     resolveFlow();
     return {
-      html: `<html><body><h1>Configuration error</h1><p>SCHWAB_CLIENT_ID and SCHWAB_CLIENT_SECRET are required.</p>${POST_SCRIPT}</body></html>`,
+      html: renderSchwabOAuthPage({
+        variant: "error",
+        title: "Configuration error",
+        message: "Schwab API credentials are not configured on the server.",
+        detail: "Set SCHWAB_CLIENT_ID and SCHWAB_CLIENT_SECRET.",
+        notifySuccess: false,
+      }),
     };
   }
 
@@ -403,14 +539,25 @@ export async function handleSchwabCallback(
 
     resolveFlow();
     return {
-      html: `<html><body style="font-family:sans-serif;max-width:480px;margin:2em auto;padding:1em;"><h1 style="color:green;">✓ Success</h1><p>Credentials saved for this portfolio.</p><p>You can close this tab.</p><script>if (window.opener) window.opener.postMessage({ type: 'schwab-login-done', success: true }, '*');</script></body></html>`,
+      html: renderSchwabOAuthPage({
+        variant: "success",
+        title: "Connected",
+        message: "Schwab credentials were saved for this portfolio.",
+        notifySuccess: true,
+      }),
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn("[Schwab OAuth] Remote callback: token exchange failed", msg);
     resolveFlow();
     return {
-      html: `<html><body style="font-family:sans-serif;max-width:520px;margin:2em auto;padding:1em;"><h1 style="color:red;">Token exchange failed</h1><p>${msg}</p><p>Your Schwab app Callback URL must be exactly: <strong>${redirectUri}</strong></p><script>if (window.opener) window.opener.postMessage({ type: 'schwab-login-done', success: false }, '*');</script></body></html>`,
+      html: renderSchwabOAuthPage({
+        variant: "error",
+        title: "Token exchange failed",
+        message: "Could not complete Schwab authorization.",
+        detail: `${msg}\n\nSchwab app callback URL must be exactly: ${redirectUri}`,
+        notifySuccess: false,
+      }),
     };
   }
 }

@@ -966,6 +966,13 @@ function StrategyChart({ strategy }: { strategy: StrategyPerformance }) {
   const lastVal = values[values.length - 1];
   const lineColor = lastVal >= 0 ? "var(--color-positive)" : "var(--color-negative)";
 
+  const monthlyReturnPct = (index: number): number => {
+    const p = points[index];
+    const prevCumulative = index > 0 ? points[index - 1].cumulativePnL : 0;
+    const base = Math.abs(prevCumulative) || Math.abs(p.pnl) || 1;
+    return (p.pnl / base) * 100;
+  };
+
   return (
     <div className="strategy-chart">
       <h3 className="strategy-chart-title">
@@ -990,13 +997,29 @@ function StrategyChart({ strategy }: { strategy: StrategyPerformance }) {
             fill={p.cumulativePnL >= 0 ? "var(--color-positive)" : "var(--color-negative)"}
           />
         ))}
-        {points.map((p, i) => (
-          <text key={`lbl-${i}`} x={toX(i)} y={height - 4}
-            textAnchor="middle" fill="var(--color-ink-2)" fontSize="9"
-          >
-            {p.month.slice(5)}
-          </text>
-        ))}
+        {points.map((p, i) => {
+          const pct = monthlyReturnPct(i);
+          const pctClass = pct >= 0 ? "var(--color-positive)" : "var(--color-negative)";
+          return (
+            <g key={`lbl-${i}`}>
+              <text
+                x={toX(i)}
+                y={toY(p.cumulativePnL) - 8}
+                textAnchor="middle"
+                fill={pctClass}
+                fontSize="8"
+                fontWeight="500"
+              >
+                {formatPercent(pct)}
+              </text>
+              <text x={toX(i)} y={height - 4}
+                textAnchor="middle" fill="var(--color-ink-2)" fontSize="9"
+              >
+                {p.month.slice(5)}
+              </text>
+            </g>
+          );
+        })}
         <text x={padX - 4} y={padY + 3} textAnchor="end" fill="var(--color-ink-2)" fontSize="9">
           +${formatCurrency(maxVal)}
         </text>
@@ -1008,16 +1031,41 @@ function StrategyChart({ strategy }: { strategy: StrategyPerformance }) {
   );
 }
 
-function PnLBar({ value, max }: { value: number; max: number }) {
+function formatPercent(value: number): string {
+  const rounded = Math.round(value * 10) / 10;
+  const sign = rounded > 0 ? "+" : "";
+  return `${sign}${rounded}%`;
+}
+
+function monthlyReturnPercent(m: MonthlyPerformance): number {
+  if (m.totalBought <= 0) return 0;
+  return (m.realizedPnL / m.totalBought) * 100;
+}
+
+function PnLBar({
+  value,
+  max,
+  labelPercent,
+}: {
+  value: number;
+  max: number;
+  labelPercent: number;
+}) {
   if (max === 0) return null;
-  const pct = Math.min(100, (Math.abs(value) / max) * 100);
+  const barWidth = Math.min(100, (Math.abs(value) / max) * 100);
   const isPositive = value >= 0;
+  const labelClass = labelPercent >= 0 ? "perf-positive" : "perf-negative";
   return (
-    <div className="pnl-bar-track">
-      <div
-        className={`pnl-bar-fill ${isPositive ? "pnl-bar-positive" : "pnl-bar-negative"}`}
-        style={{ width: `${pct}%` }}
-      />
+    <div className="pnl-bar-wrap">
+      <span className={`pnl-bar-label ${labelClass}`}>
+        {formatPercent(labelPercent)}
+      </span>
+      <div className="pnl-bar-track">
+        <div
+          className={`pnl-bar-fill ${isPositive ? "pnl-bar-positive" : "pnl-bar-negative"}`}
+          style={{ width: `${barWidth}%` }}
+        />
+      </div>
     </div>
   );
 }
@@ -1124,7 +1172,7 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
                 <th>Win Rate</th>
                 <th>Bought</th>
                 <th>Sold</th>
-                <th></th>
+                <th>Return</th>
               </tr>
             </thead>
             <tbody>
@@ -1141,7 +1189,11 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
                   <td>${formatCurrency(m.totalBought)}</td>
                   <td>${formatCurrency(m.totalSold)}</td>
                   <td className="perf-bar-cell">
-                    <PnLBar value={m.realizedPnL} max={maxAbsPnL} />
+                    <PnLBar
+                      value={m.realizedPnL}
+                      max={maxAbsPnL}
+                      labelPercent={monthlyReturnPercent(m)}
+                    />
                   </td>
                 </tr>
               ))}

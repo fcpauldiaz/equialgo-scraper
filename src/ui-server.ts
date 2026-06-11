@@ -14,7 +14,8 @@ import {
   readClosedTrades,
   readPerformanceByStrategy,
 } from "./state";
-import { startSchwabLoginFlow, handleSchwabCallback } from "./schwab-oauth";
+import { startSchwabLoginFlow, handleSchwabCallback, isSchwabCallbackPathname, schwabCallbackPathnames } from "./schwab-oauth";
+import { renderSchwabOAuthPage } from "./schwab-oauth-page";
 import {
   getTradierAccountId,
   isTradierAccountInProfileList,
@@ -25,27 +26,23 @@ import { DAILY_CHECK_TIMEZONE, runCheckForPortfolio } from "./run-check";
 
 const UI_PORT = parseInt(process.env.UI_PORT || "3000", 10);
 
-function normalizeIncomingPathname(p: string): string {
-  if (p.length > 1 && p.endsWith("/")) {
-    return p.slice(0, -1);
-  }
-  return p;
-}
+function getPublicOrigin(req: http.IncomingMessage): string | undefined {
+  const fromEnv = process.env.PUBLIC_URL?.trim().replace(/\/+$/, "");
+  if (fromEnv) return fromEnv;
 
-/** Path this Node process sees for GET /callback from Schwab (may differ from SCHWAB_REDIRECT_URI path behind a reverse proxy). */
-function schwabIncomingCallbackPathname(): string | null {
-  const override = process.env.SCHWAB_CALLBACK_INCOMING_PATH?.trim();
-  if (override) {
-    const withSlash = override.startsWith("/") ? override : `/${override}`;
-    return normalizeIncomingPathname(withSlash);
-  }
-  const schwabRedirectUri = process.env.SCHWAB_REDIRECT_URI?.trim();
-  if (!schwabRedirectUri) return null;
-  try {
-    return normalizeIncomingPathname(new URL(schwabRedirectUri).pathname);
-  } catch {
-    return null;
-  }
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  const protoRaw = Array.isArray(forwardedProto)
+    ? forwardedProto[0]
+    : forwardedProto;
+  const proto = protoRaw?.split(",")[0]?.trim() || "http";
+
+  const forwardedHost = req.headers["x-forwarded-host"];
+  const hostRaw =
+    (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost)?.split(",")[0]?.trim() ||
+    req.headers.host?.split(",")[0]?.trim();
+  if (!hostRaw) return undefined;
+
+  return `${proto}://${hostRaw}`;
 }
 
 const UI_DIST = path.join(__dirname, "..", "ui", "dist");
@@ -143,11 +140,54 @@ function serveUiFallback(res: http.ServerResponse): void {
   });
 }
 
+async function tryServeSchwabCallback(
+  res: http.ServerResponse,
+  url: URL,
+  pathname: string,
+  method: string
+): Promise<boolean> {
+  if (method !== "GET" || !isSchwabCallbackPathname(pathname)) {
+    return false;
+  }
+
+  try {
+    const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state");
+    const error = url.searchParams.get("error");
+    const errorDescription = url.searchParams.get("error_description");
+    const { html } = await handleSchwabCallback({
+      code,
+      state,
+      error,
+      error_description: errorDescription,
+    });
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(html);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.writeHead(500, { "Content-Type": "text/html" });
+    res.end(
+      renderSchwabOAuthPage({
+        variant: "error",
+        title: "Callback error",
+        message: "An unexpected error occurred while processing Schwab authorization.",
+        detail: message,
+        notifySuccess: false,
+      })
+    );
+  }
+  return true;
+}
+
 export function startUiServer(): http.Server {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${UI_PORT}`);
     const pathname = url.pathname;
     const method = req.method ?? "GET";
+
+    if (await tryServeSchwabCallback(res, url, pathname, method)) {
+      return;
+    }
 
     if (pathname.startsWith("/api/")) {
       // API routes handled below
@@ -247,40 +287,13 @@ export function startUiServer(): http.Server {
           sendJson(res, 400, { error: "portfolioId is required" });
           return;
         }
-        const { authUrl } = await startSchwabLoginFlow(portfolioId);
+        const { authUrl } = await startSchwabLoginFlow(portfolioId, {
+          publicOrigin: getPublicOrigin(req),
+        });
         sendJson(res, 200, { authUrl });
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         sendJson(res, 500, { error: message });
-      }
-      return;
-    }
-
-    const schwabCallbackPath = schwabIncomingCallbackPathname();
-    if (
-      schwabCallbackPath &&
-      normalizeIncomingPathname(pathname) === schwabCallbackPath &&
-      method === "GET"
-    ) {
-      try {
-        const code = url.searchParams.get("code");
-        const state = url.searchParams.get("state");
-        const error = url.searchParams.get("error");
-        const errorDescription = url.searchParams.get("error_description");
-        const { html } = await handleSchwabCallback({
-          code,
-          state,
-          error,
-          error_description: errorDescription,
-        });
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(html);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        res.writeHead(500, { "Content-Type": "text/html" });
-        res.end(
-          `<html><body><h1>Callback error</h1><p>${message}</p></body></html>`
-        );
       }
       return;
     }
@@ -587,6 +600,13 @@ export function startUiServer(): http.Server {
 
   server.listen(UI_PORT, "0.0.0.0", () => {
     console.log(`UI server listening at http://localhost:${UI_PORT}`);
+    const redirectUri = process.env.SCHWAB_REDIRECT_URI?.trim();
+    if (redirectUri) {
+      console.log(`[Schwab OAuth] SCHWAB_REDIRECT_URI=${redirectUri}`);
+      console.log(
+        `[Schwab OAuth] Incoming callback paths: ${schwabCallbackPathnames().join(", ")}`
+      );
+    }
   });
 
   return server;
