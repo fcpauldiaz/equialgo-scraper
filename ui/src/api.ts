@@ -295,6 +295,7 @@ export interface StrategyMonthlyPnL {
   month: string;
   pnl: number;
   cumulativePnL: number;
+  totalBought: number;
 }
 
 export interface StrategyPerformance {

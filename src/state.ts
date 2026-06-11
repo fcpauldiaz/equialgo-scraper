@@ -1205,7 +1205,7 @@ export interface StrategyPerformance {
   realizedPnL: number;
   closedTrades: number;
   winRate: number;
-  monthlyPnL: { month: string; pnl: number; cumulativePnL: number }[];
+  monthlyPnL: { month: string; pnl: number; cumulativePnL: number; totalBought: number }[];
 }
 
 export async function readPerformanceByStrategy(
@@ -1242,7 +1242,7 @@ export async function readPerformanceByStrategy(
     lotsByKey.set(key, lots);
   }
 
-  type StrategyTrade = { pnl: number; closedAt: number };
+  type StrategyTrade = { pnl: number; costBasis: number; closedAt: number };
   const tradesByStrategy = new Map<string, StrategyTrade[]>();
 
   for (const row of sellsResult.rows as unknown as {
@@ -1266,7 +1266,7 @@ export async function readPerformanceByStrategy(
       const pnl = (Number(row.price) - costBasis / matched) * matched;
       const slug = row.strategy_slug || "unknown";
       const trades = tradesByStrategy.get(slug) ?? [];
-      trades.push({ pnl, closedAt: Number(row.executed_at) });
+      trades.push({ pnl, costBasis, closedAt: Number(row.executed_at) });
       tradesByStrategy.set(slug, trades);
     }
   }
@@ -1277,16 +1277,24 @@ export async function readPerformanceByStrategy(
     const wins = trades.filter((t) => t.pnl >= 0).length;
     const winRate = trades.length > 0 ? Math.round((wins / trades.length) * 1000) / 10 : 0;
 
-    const monthlyMap = new Map<string, number>();
+    const monthlyMap = new Map<string, { pnl: number; bought: number }>();
     for (const t of trades) {
       const month = new Date(t.closedAt).toISOString().slice(0, 7);
-      monthlyMap.set(month, (monthlyMap.get(month) ?? 0) + t.pnl);
+      const entry = monthlyMap.get(month) ?? { pnl: 0, bought: 0 };
+      entry.pnl += t.pnl;
+      entry.bought += t.costBasis;
+      monthlyMap.set(month, entry);
     }
     const sortedMonths = Array.from(monthlyMap.entries()).sort((a, b) => a[0].localeCompare(b[0]));
     let cumulative = 0;
-    const monthlyPnL = sortedMonths.map(([month, pnl]) => {
-      cumulative += pnl;
-      return { month, pnl: Math.round(pnl * 100) / 100, cumulativePnL: Math.round(cumulative * 100) / 100 };
+    const monthlyPnL = sortedMonths.map(([month, data]) => {
+      cumulative += data.pnl;
+      return {
+        month,
+        pnl: Math.round(data.pnl * 100) / 100,
+        cumulativePnL: Math.round(cumulative * 100) / 100,
+        totalBought: Math.round(data.bought * 100) / 100,
+      };
     });
 
     results.push({

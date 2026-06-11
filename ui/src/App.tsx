@@ -22,6 +22,7 @@ import {
   SYSTEMTRADER_STRATEGY_SLUGS,
   type PortfolioItem,
   type MonthlyPerformance,
+  type StrategyMonthlyPnL,
   type StrategyPerformance,
   type TradierAccountChoice,
 } from "./api";
@@ -966,13 +967,6 @@ function StrategyChart({ strategy }: { strategy: StrategyPerformance }) {
   const lastVal = values[values.length - 1];
   const lineColor = lastVal >= 0 ? "var(--color-positive)" : "var(--color-negative)";
 
-  const monthlyReturnPct = (index: number): number => {
-    const p = points[index];
-    const prevCumulative = index > 0 ? points[index - 1].cumulativePnL : 0;
-    const base = Math.abs(prevCumulative) || Math.abs(p.pnl) || 1;
-    return (p.pnl / base) * 100;
-  };
-
   return (
     <div className="strategy-chart">
       <h3 className="strategy-chart-title">
@@ -998,7 +992,7 @@ function StrategyChart({ strategy }: { strategy: StrategyPerformance }) {
           />
         ))}
         {points.map((p, i) => {
-          const pct = monthlyReturnPct(i);
+          const pct = strategyMonthlyReturnPercent(p);
           const pctClass = pct >= 0 ? "var(--color-positive)" : "var(--color-negative)";
           return (
             <g key={`lbl-${i}`}>
@@ -1040,6 +1034,11 @@ function formatPercent(value: number): string {
 function monthlyReturnPercent(m: MonthlyPerformance): number {
   if (m.totalBought <= 0) return 0;
   return (m.realizedPnL / m.totalBought) * 100;
+}
+
+function strategyMonthlyReturnPercent(p: StrategyMonthlyPnL): number {
+  if (p.totalBought <= 0) return 0;
+  return (p.pnl / p.totalBought) * 100;
 }
 
 function PnLBar({
