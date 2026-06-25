@@ -828,6 +828,27 @@ function formatSharePrice(value: number | null | undefined): string {
   })}`;
 }
 
+function deriveOpenProfitLossPercent(pos: PortfolioPosition): number | undefined {
+  if (
+    pos.avgEntryPrice != null &&
+    pos.avgEntryPrice > 0 &&
+    pos.currentPrice != null &&
+    pos.currentPrice > 0
+  ) {
+    return ((pos.currentPrice - pos.avgEntryPrice) / pos.avgEntryPrice) * 100;
+  }
+  if (
+    pos.longOpenProfitLoss != null &&
+    pos.avgEntryPrice != null &&
+    pos.avgEntryPrice > 0 &&
+    pos.longQuantity > 0
+  ) {
+    const costBasis = pos.avgEntryPrice * pos.longQuantity;
+    return costBasis > 0 ? (pos.longOpenProfitLoss / costBasis) * 100 : undefined;
+  }
+  return undefined;
+}
+
 function PositionsTable({ positions }: { positions: PortfolioPosition[] }) {
   return (
     <table className="positions-table">
@@ -839,12 +860,14 @@ function PositionsTable({ positions }: { positions: PortfolioPosition[] }) {
           <th>Current</th>
           <th>Market value</th>
           <th>Day P/L</th>
-          <th>Day P/L %</th>
+          <th>Open P/L %</th>
           <th>Open P/L</th>
         </tr>
       </thead>
       <tbody>
-        {positions.map((pos) => (
+        {positions.map((pos) => {
+          const openPnLPercent = deriveOpenProfitLossPercent(pos);
+          return (
           <tr key={pos.symbol}>
             <td>{pos.symbol}</td>
             <td>{pos.longQuantity}</td>
@@ -868,14 +891,13 @@ function PositionsTable({ positions }: { positions: PortfolioPosition[] }) {
             </td>
             <td
               className={
-                pos.currentDayProfitLossPercentage != null &&
-                pos.currentDayProfitLossPercentage < 0
+                openPnLPercent != null && openPnLPercent < 0
                   ? "pl-negative"
                   : "pl-positive"
               }
             >
-              {pos.currentDayProfitLossPercentage != null
-                ? `${pos.currentDayProfitLossPercentage.toFixed(2)}%`
+              {openPnLPercent != null
+                ? `${openPnLPercent >= 0 ? "+" : ""}${openPnLPercent.toFixed(2)}%`
                 : "—"}
             </td>
             <td
@@ -890,7 +912,8 @@ function PositionsTable({ positions }: { positions: PortfolioPosition[] }) {
                 : "—"}
             </td>
           </tr>
-        ))}
+          );
+        })}
       </tbody>
     </table>
   );
