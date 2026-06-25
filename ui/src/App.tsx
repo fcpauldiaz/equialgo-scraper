@@ -1024,6 +1024,17 @@ function PortfolioDetailView({
         {portfolio ? ` / ${portfolio.name}` : ` / ${portfolioId}`}
       </p>
       <h1>{portfolio ? portfolio.name : `Portfolio ${portfolioId}`}</h1>
+      {portfolio?.hasCredentials && portfolio.currentValue != null && (
+        <p className="portfolio-detail-value">
+          Account value{" "}
+          <span className="portfolio-current-value">
+            ${portfolio.currentValue.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
+          </span>
+        </p>
+      )}
       {portfolio?.brokerage === "tradier" && portfolio.hasCredentials && (
         <div className="portfolio-detail-tradier">
           <p className="portfolio-tradier-account-hint">

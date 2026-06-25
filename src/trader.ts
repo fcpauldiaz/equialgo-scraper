@@ -203,6 +203,46 @@ function deriveCurrentPrice(
   return undefined;
 }
 
+/** Schwab currentDayProfitLoss includes same-day trade cost; use net change × prior-session qty instead. */
+function schwabIntradayPnL(position: {
+  longQuantity?: number;
+  previousSessionLongQuantity?: number;
+  marketValue?: number;
+  instrument?: { netChange?: number };
+}): {
+  currentDayProfitLoss?: number;
+  currentDayProfitLossPercentage?: number;
+} {
+  const netChange = Number(position.instrument?.netChange);
+  if (!Number.isFinite(netChange)) {
+    return {};
+  }
+
+  const longQuantity = Math.max(0, Math.floor(position.longQuantity ?? 0));
+  if (longQuantity <= 0) {
+    return {};
+  }
+
+  const priorQty = Math.max(
+    0,
+    Math.floor(position.previousSessionLongQuantity ?? longQuantity)
+  );
+  const qtyForDayMove = priorQty > 0 ? priorQty : longQuantity;
+  const currentDayProfitLoss = netChange * qtyForDayMove;
+
+  const marketValue = position.marketValue;
+  let currentDayProfitLossPercentage: number | undefined;
+  if (marketValue != null && longQuantity > 0) {
+    const currentPrice = marketValue / longQuantity;
+    const previousClose = currentPrice - netChange;
+    if (previousClose > 0) {
+      currentDayProfitLossPercentage = (netChange / previousClose) * 100;
+    }
+  }
+
+  return { currentDayProfitLoss, currentDayProfitLossPercentage };
+}
+
 /**
  * Schwab ties refresh (and code exchange) to the redirect_uri used when the refresh token was issued.
  * Prefer the URI persisted with credentials so production env can differ from how the user authorized.
@@ -697,6 +737,7 @@ async function getCurrentPositions(
           const p = position as {
             longQuantity?: number;
             shortQuantity?: number;
+            previousSessionLongQuantity?: number;
             averagePrice?: number;
             averageLongPrice?: number;
             taxLotAverageLongPrice?: number;
@@ -704,6 +745,7 @@ async function getCurrentPositions(
             currentDayProfitLossPercentage?: number;
             longOpenProfitLoss?: number;
             marketValue?: number;
+            instrument?: { netChange?: number };
           };
           const longQuantity = p.longQuantity ?? 0;
           const shortQuantity = p.shortQuantity ?? 0;
@@ -712,6 +754,7 @@ async function getCurrentPositions(
             p.averagePrice ??
             p.averageLongPrice ??
             p.taxLotAverageLongPrice;
+          const dayPnL = schwabIntradayPnL(p);
           positionsMap.set(position.instrument.symbol, {
             symbol: position.instrument.symbol,
             longQuantity,
@@ -721,8 +764,8 @@ async function getCurrentPositions(
                 ? avgEntryPrice
                 : undefined,
             currentPrice: deriveCurrentPrice(marketValue, longQuantity, undefined),
-            currentDayProfitLoss: p.currentDayProfitLoss,
-            currentDayProfitLossPercentage: p.currentDayProfitLossPercentage,
+            currentDayProfitLoss: dayPnL.currentDayProfitLoss,
+            currentDayProfitLossPercentage: dayPnL.currentDayProfitLossPercentage,
             longOpenProfitLoss: p.longOpenProfitLoss,
             marketValue,
           });

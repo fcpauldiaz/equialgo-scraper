@@ -255,6 +255,18 @@ input:focus, select:focus {
   font-variant-numeric: tabular-nums;
 }
 
+.portfolio-detail-value {
+  margin: calc(-1 * var(--space-8)) 0 var(--space-16);
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+}
+
+.portfolio-detail-value .portfolio-current-value {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
 .status {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
