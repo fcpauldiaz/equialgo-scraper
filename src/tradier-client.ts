@@ -235,6 +235,49 @@ export async function getTradierPositions(
   return out;
 }
 
+type TradierQuoteItem = {
+  symbol?: string;
+  last?: number;
+};
+
+function normalizeTradierQuotes(payload: unknown): TradierQuoteItem[] {
+  const root = payload as {
+    quotes?: { quote?: TradierQuoteItem | TradierQuoteItem[] | null };
+  };
+  const quote = root.quotes?.quote;
+  if (quote == null) return [];
+  return Array.isArray(quote) ? quote : [quote];
+}
+
+export async function getTradierQuotePrices(
+  apiKey: string,
+  sandbox: boolean,
+  symbols: string[]
+): Promise<Map<string, number>> {
+  const unique = [...new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean))];
+  const prices = new Map<string, number>();
+  if (unique.length === 0) return prices;
+
+  const chunkSize = 50;
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const batch = unique.slice(i, i + chunkSize);
+    const path =
+      `/v1/markets/quotes?symbols=${encodeURIComponent(batch.join(","))}&greeks=false`;
+    const res = await tradierFetch(apiKey, sandbox, path);
+    if (!res.ok) continue;
+    const json = (await res.json()) as unknown;
+    for (const item of normalizeTradierQuotes(json)) {
+      const symbol = item.symbol?.trim().toUpperCase();
+      const last = Number(item.last);
+      if (symbol && Number.isFinite(last) && last > 0) {
+        prices.set(symbol, last);
+      }
+    }
+  }
+
+  return prices;
+}
+
 export async function getTradierAccountExposure(
   apiKey: string,
   accountId: string,

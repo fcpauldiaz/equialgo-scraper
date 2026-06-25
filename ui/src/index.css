@@ -248,6 +248,13 @@ input:focus, select:focus {
   font-size: var(--text-base);
 }
 
+.portfolio-current-value {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
 .status {
   font-family: var(--font-mono);
   font-size: var(--text-xs);

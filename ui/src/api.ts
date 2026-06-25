@@ -67,6 +67,8 @@ export interface PortfolioItem {
   tradierAccountNumber: string | null;
   systemtraderSlugs: string[];
   strategyRuns: PortfolioStrategyRun[];
+  /** Total account value when connected; null if unavailable */
+  currentValue?: number | null;
 }
 
 export interface TradierAccountChoice {
@@ -325,6 +327,8 @@ export async function fetchPerformance(
 export interface PortfolioPosition {
   symbol: string;
   longQuantity: number;
+  avgEntryPrice?: number;
+  currentPrice?: number;
   currentDayProfitLoss?: number;
   currentDayProfitLossPercentage?: number;
   longOpenProfitLoss?: number;

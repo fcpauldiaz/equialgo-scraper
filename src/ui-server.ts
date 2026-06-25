@@ -22,7 +22,7 @@ import {
   isTradierAccountInProfileList,
   listTradierAccountsForKey,
 } from "./tradier-client";
-import { verifyConnection, getPortfolioPositions, getHoldingsByStrategy } from "./trader";
+import { verifyConnection, getPortfolioPositions, getHoldingsByStrategy, getPortfolioCurrentValue } from "./trader";
 import { DAILY_CHECK_TIMEZONE, runCheckForPortfolio } from "./run-check";
 import { auditDaily, auditHistory, auditReportHasFailures } from "./audit-trades";
 import { closeBrowser } from "./scraper";
@@ -252,7 +252,20 @@ export function startUiServer(): http.Server {
     if (pathname === "/api/portfolios" && method === "GET") {
       try {
         const portfolios = await listPortfolios();
-        sendJson(res, 200, portfolios);
+        const withValues = await Promise.all(
+          portfolios.map(async (portfolio) => {
+            if (!portfolio.hasCredentials) {
+              return { ...portfolio, currentValue: null };
+            }
+            try {
+              const currentValue = await getPortfolioCurrentValue(portfolio.id);
+              return { ...portfolio, currentValue };
+            } catch {
+              return { ...portfolio, currentValue: null };
+            }
+          })
+        );
+        sendJson(res, 200, withValues);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         sendJson(res, 500, { error: message });

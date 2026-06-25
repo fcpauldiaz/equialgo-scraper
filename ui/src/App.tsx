@@ -437,7 +437,6 @@ function PortfolioRow({
   showTradierForm,
   onShowTradierForm,
   onCloseTradierForm,
-  showPositionsLink,
   onSlugsChange,
   strategyUpdatePending,
   canWrite = true,
@@ -448,7 +447,6 @@ function PortfolioRow({
   showTradierForm: boolean;
   onShowTradierForm: () => void;
   onCloseTradierForm: () => void;
-  showPositionsLink?: boolean;
   onSlugsChange: (portfolioId: number, slugs: string[]) => void;
   strategyUpdatePending: boolean;
   canWrite?: boolean;
@@ -565,17 +563,28 @@ function PortfolioRow({
       }`
     : "Not connected";
 
+  const currentValueLabel =
+    portfolio.currentValue != null
+      ? `$${portfolio.currentValue.toLocaleString(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`
+      : null;
+
   return (
     <li className="portfolio-row">
       <div className="portfolio-row-header">
         <div className="portfolio-row-main">
           <span className="portfolio-name">{portfolio.name}</span>
+          {currentValueLabel && (
+            <span className="portfolio-current-value">{currentValueLabel}</span>
+          )}
           <span className={`status ${portfolio.hasCredentials ? "connected" : "disconnected"}`}>
             {statusLabel}
           </span>
         </div>
         <div className="portfolio-actions">
-          {showPositionsLink && portfolio.hasCredentials && (
+          {portfolio.hasCredentials && (
             <a href={`#/portfolios/${portfolio.id}`}>Positions</a>
           )}
           {canWrite && portfolio.hasCredentials && portfolio.brokerage === "schwab" && (
@@ -795,7 +804,6 @@ function DashboardView({
               showTradierForm={showTradierFormForId === p.id}
               onShowTradierForm={() => setShowTradierFormForId(p.id)}
               onCloseTradierForm={() => setShowTradierFormForId(null)}
-              showPositionsLink
               onSlugsChange={(id, slugs) =>
                 strategyMutation.mutate({ portfolioId: id, slugs })
               }
@@ -812,6 +820,14 @@ function DashboardView({
   );
 }
 
+function formatSharePrice(value: number | null | undefined): string {
+  if (value == null) return "—";
+  return `$${value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  })}`;
+}
+
 function PositionsTable({ positions }: { positions: PortfolioPosition[] }) {
   return (
     <table className="positions-table">
@@ -819,6 +835,8 @@ function PositionsTable({ positions }: { positions: PortfolioPosition[] }) {
         <tr>
           <th>Symbol</th>
           <th>Quantity</th>
+          <th>Avg entry</th>
+          <th>Current</th>
           <th>Market value</th>
           <th>Day P/L</th>
           <th>Day P/L %</th>
@@ -830,6 +848,8 @@ function PositionsTable({ positions }: { positions: PortfolioPosition[] }) {
           <tr key={pos.symbol}>
             <td>{pos.symbol}</td>
             <td>{pos.longQuantity}</td>
+            <td>{formatSharePrice(pos.avgEntryPrice)}</td>
+            <td>{formatSharePrice(pos.currentPrice)}</td>
             <td>
               {pos.marketValue != null
                 ? `$${pos.marketValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`

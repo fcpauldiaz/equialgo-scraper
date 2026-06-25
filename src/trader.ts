@@ -17,6 +17,7 @@ import {
   getTradierAccountId,
   getTradierAccountExposure,
   getTradierPositions,
+  getTradierQuotePrices,
   placeTradierOrder,
   getTradierOrderFill,
   fetchTradierTradeHistory,
@@ -176,10 +177,30 @@ interface Position {
   symbol: string;
   longQuantity: number;
   shortQuantity: number;
+  avgEntryPrice?: number;
+  currentPrice?: number;
   currentDayProfitLoss?: number;
   currentDayProfitLossPercentage?: number;
   longOpenProfitLoss?: number;
   marketValue?: number;
+}
+
+function deriveCurrentPrice(
+  marketValue: number | undefined,
+  quantity: number,
+  explicitPrice: number | undefined
+): number | undefined {
+  if (explicitPrice != null && explicitPrice > 0) {
+    return explicitPrice;
+  }
+  if (
+    marketValue != null &&
+    Number.isFinite(marketValue) &&
+    quantity > 0
+  ) {
+    return marketValue / quantity;
+  }
+  return undefined;
 }
 
 /**
@@ -630,12 +651,30 @@ async function getCurrentPositions(
     }
     const accountId = await resolveTradierAccountId(portfolioId, creds);
     const positions = await getTradierPositions(creds.apiKey, accountId, creds.sandbox);
+    const quotes = await getTradierQuotePrices(
+      creds.apiKey,
+      creds.sandbox,
+      positions.map((p) => p.symbol)
+    );
     const positionsMap = new Map<string, Position>();
     for (const p of positions) {
+      const avgEntryPrice =
+        p.costBasis != null && p.longQuantity > 0
+          ? p.costBasis / p.longQuantity
+          : undefined;
+      const currentPrice = deriveCurrentPrice(
+        undefined,
+        p.longQuantity,
+        quotes.get(p.symbol)
+      );
       positionsMap.set(p.symbol, {
         symbol: p.symbol,
         longQuantity: p.longQuantity,
         shortQuantity: 0,
+        avgEntryPrice,
+        currentPrice,
+        marketValue:
+          currentPrice != null ? currentPrice * p.longQuantity : undefined,
       });
     }
     return positionsMap;
@@ -658,6 +697,9 @@ async function getCurrentPositions(
           const p = position as {
             longQuantity?: number;
             shortQuantity?: number;
+            averagePrice?: number;
+            averageLongPrice?: number;
+            taxLotAverageLongPrice?: number;
             currentDayProfitLoss?: number;
             currentDayProfitLossPercentage?: number;
             longOpenProfitLoss?: number;
@@ -665,14 +707,24 @@ async function getCurrentPositions(
           };
           const longQuantity = p.longQuantity ?? 0;
           const shortQuantity = p.shortQuantity ?? 0;
+          const marketValue = p.marketValue;
+          const avgEntryPrice =
+            p.averagePrice ??
+            p.averageLongPrice ??
+            p.taxLotAverageLongPrice;
           positionsMap.set(position.instrument.symbol, {
             symbol: position.instrument.symbol,
             longQuantity,
             shortQuantity,
+            avgEntryPrice:
+              avgEntryPrice != null && avgEntryPrice > 0
+                ? avgEntryPrice
+                : undefined,
+            currentPrice: deriveCurrentPrice(marketValue, longQuantity, undefined),
             currentDayProfitLoss: p.currentDayProfitLoss,
             currentDayProfitLossPercentage: p.currentDayProfitLossPercentage,
             longOpenProfitLoss: p.longOpenProfitLoss,
-            marketValue: p.marketValue,
+            marketValue,
           });
         }
       }
@@ -796,6 +848,8 @@ export async function verifySchwabConnection(portfolioId: number): Promise<Verif
 export type PortfolioPosition = {
   symbol: string;
   longQuantity: number;
+  avgEntryPrice?: number;
+  currentPrice?: number;
   currentDayProfitLoss?: number;
   currentDayProfitLossPercentage?: number;
   longOpenProfitLoss?: number;
@@ -829,11 +883,62 @@ export async function getPortfolioPositions(
   return Array.from(map.values()).map((p) => ({
     symbol: p.symbol,
     longQuantity: p.longQuantity,
+    avgEntryPrice: p.avgEntryPrice,
+    currentPrice: p.currentPrice,
     currentDayProfitLoss: p.currentDayProfitLoss,
     currentDayProfitLossPercentage: p.currentDayProfitLossPercentage,
     longOpenProfitLoss: p.longOpenProfitLoss,
     marketValue: p.marketValue,
   }));
+}
+
+export async function getPortfolioCurrentValue(
+  portfolioId: number
+): Promise<number | null> {
+  const brokerage = await getPortfolioBrokerage(portfolioId);
+  if (brokerage === "tradier") {
+    const creds = await readTradierCredentials(portfolioId);
+    if (!creds) return null;
+    const accountId = await resolveTradierAccountId(portfolioId, creds);
+    return getTradierAccountExposure(creds.apiKey, accountId, creds.sandbox);
+  }
+  if (brokerage === "schwab") {
+    try {
+      const accountNumber = await getAccountHashFromApi(portfolioId);
+      const json = await schwabApiGet(
+        portfolioId,
+        `/trader/v1/accounts/${encodeURIComponent(accountNumber)}?fields=positions`
+      );
+      const account = json as {
+        aggregatedBalance?: {
+          currentLiquidationValue?: number;
+          liquidationValue?: number;
+        };
+        securitiesAccount?: {
+          aggregatedBalance?: {
+            currentLiquidationValue?: number;
+            liquidationValue?: number;
+          };
+          currentBalances?: { liquidationValue?: number };
+        };
+      };
+      const aggregated =
+        account.aggregatedBalance ?? account.securitiesAccount?.aggregatedBalance;
+      const liquidation =
+        aggregated?.currentLiquidationValue ??
+        aggregated?.liquidationValue ??
+        account.securitiesAccount?.currentBalances?.liquidationValue;
+      if (liquidation != null && Number.isFinite(liquidation) && liquidation > 0) {
+        return liquidation;
+      }
+    } catch {
+      // fall through to positions sum
+    }
+    const positions = await getPortfolioPositions(portfolioId);
+    const total = positions.reduce((sum, p) => sum + (p.marketValue ?? 0), 0);
+    return total > 0 ? total : null;
+  }
+  return null;
 }
 
 export type StrategyHoldingsGroup = {
