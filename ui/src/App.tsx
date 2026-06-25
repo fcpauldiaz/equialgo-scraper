@@ -939,14 +939,22 @@ function StrategyHoldingsSummary({
   totalMarketValue: number | null;
   totalOpenPnL: number | null;
 }) {
-  const parts = [`${count} position${count === 1 ? "" : "s"}`];
-  if (totalMarketValue != null) {
-    parts.push(`${formatOptionalMoney(totalMarketValue)} market value`);
-  }
-  if (totalOpenPnL != null) {
-    parts.push(`${formatOptionalSignedMoney(totalOpenPnL)} open P/L`);
-  }
-  return <span className="strategy-holdings-summary">{parts.join(" · ")}</span>;
+  return (
+    <span className="strategy-holdings-summary">
+      {count} position{count === 1 ? "" : "s"}
+      {totalMarketValue != null && (
+        <> · {formatOptionalMoney(totalMarketValue)} market value</>
+      )}
+      {totalOpenPnL != null && (
+        <>
+          {" · "}
+          <span className={totalOpenPnL >= 0 ? "perf-positive" : "perf-negative"}>
+            {formatOptionalSignedMoney(totalOpenPnL)} open P/L
+          </span>
+        </>
+      )}
+    </span>
+  );
 }
 
 function HoldingsByStrategySection({ report }: { report: HoldingsByStrategyReport }) {
