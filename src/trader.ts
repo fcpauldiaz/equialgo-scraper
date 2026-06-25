@@ -203,6 +203,27 @@ function deriveCurrentPrice(
   return undefined;
 }
 
+function deriveOpenProfitLoss(
+  longQuantity: number,
+  avgEntryPrice: number | undefined,
+  currentPrice: number | undefined,
+  reportedOpenPnL: number | undefined
+): number | undefined {
+  if (reportedOpenPnL != null && Number.isFinite(reportedOpenPnL)) {
+    return reportedOpenPnL;
+  }
+  if (
+    longQuantity > 0 &&
+    avgEntryPrice != null &&
+    avgEntryPrice > 0 &&
+    currentPrice != null &&
+    currentPrice > 0
+  ) {
+    return (currentPrice - avgEntryPrice) * longQuantity;
+  }
+  return undefined;
+}
+
 /** Schwab currentDayProfitLoss includes same-day trade cost; use net change × prior-session qty instead. */
 function schwabIntradayPnL(position: {
   longQuantity?: number;
@@ -707,14 +728,21 @@ async function getCurrentPositions(
         p.longQuantity,
         quotes.get(p.symbol)
       );
+      const marketValue =
+        currentPrice != null ? currentPrice * p.longQuantity : undefined;
       positionsMap.set(p.symbol, {
         symbol: p.symbol,
         longQuantity: p.longQuantity,
         shortQuantity: 0,
         avgEntryPrice,
         currentPrice,
-        marketValue:
-          currentPrice != null ? currentPrice * p.longQuantity : undefined,
+        marketValue,
+        longOpenProfitLoss: deriveOpenProfitLoss(
+          p.longQuantity,
+          avgEntryPrice,
+          currentPrice,
+          undefined
+        ),
       });
     }
     return positionsMap;
@@ -744,6 +772,7 @@ async function getCurrentPositions(
             currentDayProfitLoss?: number;
             currentDayProfitLossPercentage?: number;
             longOpenProfitLoss?: number;
+            long_open_profit_loss?: number;
             marketValue?: number;
             instrument?: { netChange?: number };
           };
@@ -755,6 +784,7 @@ async function getCurrentPositions(
             p.averageLongPrice ??
             p.taxLotAverageLongPrice;
           const dayPnL = schwabIntradayPnL(p);
+          const currentPrice = deriveCurrentPrice(marketValue, longQuantity, undefined);
           positionsMap.set(position.instrument.symbol, {
             symbol: position.instrument.symbol,
             longQuantity,
@@ -763,10 +793,15 @@ async function getCurrentPositions(
               avgEntryPrice != null && avgEntryPrice > 0
                 ? avgEntryPrice
                 : undefined,
-            currentPrice: deriveCurrentPrice(marketValue, longQuantity, undefined),
+            currentPrice,
             currentDayProfitLoss: dayPnL.currentDayProfitLoss,
             currentDayProfitLossPercentage: dayPnL.currentDayProfitLossPercentage,
-            longOpenProfitLoss: p.longOpenProfitLoss,
+            longOpenProfitLoss: deriveOpenProfitLoss(
+              longQuantity,
+              avgEntryPrice != null && avgEntryPrice > 0 ? avgEntryPrice : undefined,
+              currentPrice,
+              p.longOpenProfitLoss ?? p.long_open_profit_loss
+            ),
             marketValue,
           });
         }
