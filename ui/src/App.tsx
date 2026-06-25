@@ -9,6 +9,7 @@ import {
   runPortfolioDailyCheck,
   fetchStatistics,
   fetchPortfolioPositions,
+  fetchHoldingsByStrategy,
   fetchPerformance,
   fetchAuthStatus,
   login,
@@ -28,6 +29,8 @@ import {
   type TradierAccountChoice,
   type AuditReport,
   type AuditDiscrepancy,
+  type PortfolioPosition,
+  type HoldingsByStrategyReport,
 } from "./api";
 
 const PORTFOLIOS_QUERY_KEY = ["portfolios"] as const;
@@ -35,6 +38,10 @@ const STATISTICS_QUERY_KEY = ["statistics"] as const;
 
 function positionsQueryKey(portfolioId: number) {
   return ["portfolios", portfolioId, "positions"] as const;
+}
+
+function holdingsByStrategyQueryKey(portfolioId: number) {
+  return ["portfolios", portfolioId, "holdings-by-strategy"] as const;
 }
 
 function tradierAccountsQueryKey(portfolioId: number) {
@@ -64,6 +71,14 @@ function usePortfolioPositions(portfolioId: number | null) {
   return useQuery({
     queryKey: positionsQueryKey(portfolioId ?? 0),
     queryFn: () => fetchPortfolioPositions(portfolioId!),
+    enabled: portfolioId != null && portfolioId > 0,
+  });
+}
+
+function useHoldingsByStrategy(portfolioId: number | null) {
+  return useQuery({
+    queryKey: holdingsByStrategyQueryKey(portfolioId ?? 0),
+    queryFn: () => fetchHoldingsByStrategy(portfolioId!),
     enabled: portfolioId != null && portfolioId > 0,
   });
 }
@@ -205,6 +220,9 @@ function useRunPortfolioDailyCheck() {
       queryClient.invalidateQueries({ queryKey: STATISTICS_QUERY_KEY });
       queryClient.invalidateQueries({
         queryKey: positionsQueryKey(portfolioId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: holdingsByStrategyQueryKey(portfolioId),
       });
     },
   });
@@ -794,6 +812,151 @@ function DashboardView({
   );
 }
 
+function PositionsTable({ positions }: { positions: PortfolioPosition[] }) {
+  return (
+    <table className="positions-table">
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th>Quantity</th>
+          <th>Market value</th>
+          <th>Day P/L</th>
+          <th>Day P/L %</th>
+          <th>Open P/L</th>
+        </tr>
+      </thead>
+      <tbody>
+        {positions.map((pos) => (
+          <tr key={pos.symbol}>
+            <td>{pos.symbol}</td>
+            <td>{pos.longQuantity}</td>
+            <td>
+              {pos.marketValue != null
+                ? `$${pos.marketValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : "—"}
+            </td>
+            <td
+              className={
+                pos.currentDayProfitLoss != null && pos.currentDayProfitLoss < 0
+                  ? "pl-negative"
+                  : "pl-positive"
+              }
+            >
+              {pos.currentDayProfitLoss != null
+                ? `$${pos.currentDayProfitLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : "—"}
+            </td>
+            <td
+              className={
+                pos.currentDayProfitLossPercentage != null &&
+                pos.currentDayProfitLossPercentage < 0
+                  ? "pl-negative"
+                  : "pl-positive"
+              }
+            >
+              {pos.currentDayProfitLossPercentage != null
+                ? `${pos.currentDayProfitLossPercentage.toFixed(2)}%`
+                : "—"}
+            </td>
+            <td
+              className={
+                pos.longOpenProfitLoss != null && pos.longOpenProfitLoss < 0
+                  ? "pl-negative"
+                  : "pl-positive"
+              }
+            >
+              {pos.longOpenProfitLoss != null
+                ? `$${pos.longOpenProfitLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : "—"}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function formatOptionalMoney(value: number | null | undefined): string {
+  if (value == null) return "—";
+  return `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function formatOptionalSignedMoney(value: number | null | undefined): string {
+  if (value == null) return "—";
+  const prefix = value >= 0 ? "+" : "";
+  return `${prefix}$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function StrategyHoldingsSummary({
+  count,
+  totalMarketValue,
+  totalOpenPnL,
+}: {
+  count: number;
+  totalMarketValue: number | null;
+  totalOpenPnL: number | null;
+}) {
+  const parts = [`${count} position${count === 1 ? "" : "s"}`];
+  if (totalMarketValue != null) {
+    parts.push(`${formatOptionalMoney(totalMarketValue)} market value`);
+  }
+  if (totalOpenPnL != null) {
+    parts.push(`${formatOptionalSignedMoney(totalOpenPnL)} open P/L`);
+  }
+  return <span className="strategy-holdings-summary">{parts.join(" · ")}</span>;
+}
+
+function HoldingsByStrategySection({ report }: { report: HoldingsByStrategyReport }) {
+  const hasAny =
+    report.byStrategy.some((g) => g.holdings.length > 0) ||
+    report.unassigned.length > 0;
+
+  return (
+    <>
+      <h2>Holdings by Strategy</h2>
+      <p className="perf-subtitle">
+        Open positions grouped by strategy sleeve symbols tracked for this portfolio.
+      </p>
+      {!hasAny && (
+        <p className="perf-empty">No open holdings assigned to strategies yet.</p>
+      )}
+      {report.byStrategy.map((group) => (
+        <section key={group.strategy} className="strategy-holdings-group">
+          <h3 className="strategy-holdings-title">
+            {group.strategy}
+            <StrategyHoldingsSummary
+              count={group.holdings.length}
+              totalMarketValue={group.totalMarketValue}
+              totalOpenPnL={group.totalOpenPnL}
+            />
+          </h3>
+          {group.holdings.length === 0 ? (
+            <p className="strategy-holdings-empty">No open positions.</p>
+          ) : (
+            <PositionsTable positions={group.holdings} />
+          )}
+        </section>
+      ))}
+      {report.unassigned.length > 0 && (
+        <section className="strategy-holdings-group">
+          <h3 className="strategy-holdings-title">
+            Unassigned
+            <StrategyHoldingsSummary
+              count={report.unassigned.length}
+              totalMarketValue={report.unassignedTotalMarketValue}
+              totalOpenPnL={report.unassignedTotalOpenPnL}
+            />
+          </h3>
+          <p className="strategy-holdings-caption">
+            Held in the account but not mapped to any strategy sleeve.
+          </p>
+          <PositionsTable positions={report.unassigned} />
+        </section>
+      )}
+    </>
+  );
+}
+
 function PortfolioDetailView({
   portfolioId,
   portfolios,
@@ -809,6 +972,11 @@ function PortfolioDetailView({
 }) {
   const portfolio = portfolios.find((p) => p.id === portfolioId);
   const { data: positions, isLoading, error } = usePortfolioPositions(portfolioId);
+  const {
+    data: holdingsByStrategy,
+    isLoading: holdingsLoading,
+    error: holdingsError,
+  } = useHoldingsByStrategy(portfolioId);
   const [tradierPickerOpen, setTradierPickerOpen] = useState(false);
   const runDailyCheckMutation = useRunPortfolioDailyCheck();
   const [runCheckMsg, setRunCheckMsg] = useState<string | null>(null);
@@ -904,50 +1072,18 @@ function PortfolioDetailView({
       )}
       {portfolio?.hasCredentials && (
         <>
+          <h2>All Positions</h2>
           {isLoading && <p>Loading positions…</p>}
           {error && <p className="error-msg">{String(error)}</p>}
           {positions && positions.length === 0 && <p>No positions.</p>}
-          {positions && positions.length > 0 && (
-            <table className="positions-table">
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Quantity</th>
-                  <th>Market value</th>
-                  <th>Day P/L</th>
-                  <th>Day P/L %</th>
-                  <th>Open P/L</th>
-                </tr>
-              </thead>
-              <tbody>
-                {positions.map((pos) => (
-                  <tr key={pos.symbol}>
-                    <td>{pos.symbol}</td>
-                    <td>{pos.longQuantity}</td>
-                    <td>
-                      {pos.marketValue != null
-                        ? `$${pos.marketValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                        : "—"}
-                    </td>
-                    <td className={pos.currentDayProfitLoss != null && pos.currentDayProfitLoss < 0 ? "pl-negative" : "pl-positive"}>
-                      {pos.currentDayProfitLoss != null
-                        ? `$${pos.currentDayProfitLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                        : "—"}
-                    </td>
-                    <td className={pos.currentDayProfitLossPercentage != null && pos.currentDayProfitLossPercentage < 0 ? "pl-negative" : "pl-positive"}>
-                      {pos.currentDayProfitLossPercentage != null
-                        ? `${pos.currentDayProfitLossPercentage.toFixed(2)}%`
-                        : "—"}
-                    </td>
-                    <td className={pos.longOpenProfitLoss != null && pos.longOpenProfitLoss < 0 ? "pl-negative" : "pl-positive"}>
-                      {pos.longOpenProfitLoss != null
-                        ? `$${pos.longOpenProfitLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                        : "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          {positions && positions.length > 0 && <PositionsTable positions={positions} />}
+
+          {holdingsLoading && <p>Loading holdings by strategy…</p>}
+          {holdingsError && (
+            <p className="error-msg">{String(holdingsError)}</p>
+          )}
+          {holdingsByStrategy && (
+            <HoldingsByStrategySection report={holdingsByStrategy} />
           )}
         </>
       )}

@@ -342,6 +342,31 @@ export async function fetchPortfolioPositions(
   return r.json();
 }
 
+export interface StrategyHoldingsGroup {
+  strategy: string;
+  holdings: PortfolioPosition[];
+  totalMarketValue: number | null;
+  totalOpenPnL: number | null;
+}
+
+export interface HoldingsByStrategyReport {
+  byStrategy: StrategyHoldingsGroup[];
+  unassigned: PortfolioPosition[];
+  unassignedTotalMarketValue: number | null;
+  unassignedTotalOpenPnL: number | null;
+}
+
+export async function fetchHoldingsByStrategy(
+  portfolioId: number
+): Promise<HoldingsByStrategyReport> {
+  const r = await fetch(`/api/portfolios/${portfolioId}/holdings-by-strategy`);
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || r.statusText);
+  }
+  return r.json();
+}
+
 export type AuditDiscrepancyKind =
   | "missing_execution"
   | "extra_execution"

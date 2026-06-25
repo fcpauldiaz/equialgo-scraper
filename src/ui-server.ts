@@ -22,7 +22,7 @@ import {
   isTradierAccountInProfileList,
   listTradierAccountsForKey,
 } from "./tradier-client";
-import { verifyConnection, getPortfolioPositions } from "./trader";
+import { verifyConnection, getPortfolioPositions, getHoldingsByStrategy } from "./trader";
 import { DAILY_CHECK_TIMEZONE, runCheckForPortfolio } from "./run-check";
 import { auditDaily, auditHistory, auditReportHasFailures } from "./audit-trades";
 import { closeBrowser } from "./scraper";
@@ -669,6 +669,25 @@ export function startUiServer(): http.Server {
       try {
         const positions = await getPortfolioPositions(portfolioId);
         sendJson(res, 200, positions);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        sendJson(res, 503, { error: message });
+      }
+      return;
+    }
+
+    const holdingsByStrategyMatch = pathname.match(
+      /^\/api\/portfolios\/(\d+)\/holdings-by-strategy$/
+    );
+    if (holdingsByStrategyMatch && method === "GET") {
+      const portfolioId = parseInt(holdingsByStrategyMatch[1], 10);
+      if (portfolioId <= 0) {
+        sendJson(res, 400, { error: "Invalid portfolio id" });
+        return;
+      }
+      try {
+        const report = await getHoldingsByStrategy(portfolioId);
+        sendJson(res, 200, report);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         sendJson(res, 503, { error: message });

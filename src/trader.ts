@@ -5,6 +5,8 @@ import {
   writeTradierCredentials,
   getPortfolioBrokerage,
   loadStrategySleeveSymbols,
+  listPortfolioSystemTraderSlugs,
+  loadStrategySleeveSymbolsGrouped,
   mergeStrategySleeveSymbols,
   normalizeTickerSymbol,
   parseAndNormalizeSystemTraderSlug,
@@ -832,6 +834,81 @@ export async function getPortfolioPositions(
     longOpenProfitLoss: p.longOpenProfitLoss,
     marketValue: p.marketValue,
   }));
+}
+
+export type StrategyHoldingsGroup = {
+  strategy: string;
+  holdings: PortfolioPosition[];
+  totalMarketValue: number | null;
+  totalOpenPnL: number | null;
+};
+
+export type HoldingsByStrategyReport = {
+  byStrategy: StrategyHoldingsGroup[];
+  unassigned: PortfolioPosition[];
+  unassignedTotalMarketValue: number | null;
+  unassignedTotalOpenPnL: number | null;
+};
+
+function sumDefinedValues(values: Array<number | undefined>): number | null {
+  if (values.length === 0 || values.every((v) => v == null)) {
+    return null;
+  }
+  let sum = 0;
+  for (const v of values) {
+    if (v != null) sum += v;
+  }
+  return sum;
+}
+
+export async function getHoldingsByStrategy(
+  portfolioId: number
+): Promise<HoldingsByStrategyReport> {
+  const slugs = await listPortfolioSystemTraderSlugs(portfolioId);
+  const sleeveByStrategy = await loadStrategySleeveSymbolsGrouped(portfolioId);
+  const positions = await getPortfolioPositions(portfolioId);
+  const positionBySymbol = new Map(
+    positions.map((p) => [normalizeTickerSymbol(p.symbol), p])
+  );
+
+  const assignedSymbols = new Set<string>();
+  const byStrategy: StrategyHoldingsGroup[] = [];
+
+  for (const slug of slugs) {
+    const sleeveSymbols = sleeveByStrategy.get(slug.toLowerCase()) ?? [];
+    const holdings: PortfolioPosition[] = [];
+    for (const sym of sleeveSymbols) {
+      const pos = positionBySymbol.get(sym);
+      if (pos && pos.longQuantity > 0) {
+        holdings.push(pos);
+        assignedSymbols.add(sym);
+      }
+    }
+    holdings.sort((a, b) => a.symbol.localeCompare(b.symbol));
+    byStrategy.push({
+      strategy: slug,
+      holdings,
+      totalMarketValue: sumDefinedValues(holdings.map((h) => h.marketValue)),
+      totalOpenPnL: sumDefinedValues(holdings.map((h) => h.longOpenProfitLoss)),
+    });
+  }
+
+  const unassigned = positions
+    .filter(
+      (p) =>
+        p.longQuantity > 0 &&
+        !assignedSymbols.has(normalizeTickerSymbol(p.symbol))
+    )
+    .sort((a, b) => a.symbol.localeCompare(b.symbol));
+
+  return {
+    byStrategy,
+    unassigned,
+    unassignedTotalMarketValue: sumDefinedValues(unassigned.map((p) => p.marketValue)),
+    unassignedTotalOpenPnL: sumDefinedValues(
+      unassigned.map((p) => p.longOpenProfitLoss)
+    ),
+  };
 }
 
 async function placeBuyOrder(

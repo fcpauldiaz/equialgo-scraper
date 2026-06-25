@@ -433,6 +433,37 @@ export async function loadStrategySleeveSymbols(
   );
 }
 
+export async function listPortfolioSystemTraderSlugs(
+  portfolioId: number
+): Promise<string[]> {
+  const db = getClient();
+  const res = await db.execute(
+    `SELECT slug FROM portfolio_systemtrader_strategies WHERE portfolio_id = ? ORDER BY slug`,
+    [portfolioId]
+  );
+  return (res.rows as unknown as { slug: string }[]).map((r) => String(r.slug));
+}
+
+export async function loadStrategySleeveSymbolsGrouped(
+  portfolioId: number
+): Promise<Map<string, string[]>> {
+  const db = getClient();
+  const res = await db.execute(
+    `SELECT slug, symbol FROM portfolio_strategy_symbols WHERE portfolio_id = ?`,
+    [portfolioId]
+  );
+  const grouped = new Map<string, string[]>();
+  for (const row of res.rows as unknown as { slug: string; symbol: string }[]) {
+    const slug = String(row.slug).trim().toLowerCase();
+    const sym = normalizeTickerSymbol(String(row.symbol ?? ""));
+    if (!slug || !sym) continue;
+    const list = grouped.get(slug) ?? [];
+    list.push(sym);
+    grouped.set(slug, list);
+  }
+  return grouped;
+}
+
 export async function mergeStrategySleeveSymbols(
   portfolioId: number,
   slug: string,
