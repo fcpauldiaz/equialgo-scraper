@@ -283,6 +283,7 @@ export interface MonthlyPerformance {
 export interface ClosedTrade {
   symbol: string;
   portfolioId: number;
+  strategy: string;
   buyPrice: number;
   sellPrice: number;
   shares: number;

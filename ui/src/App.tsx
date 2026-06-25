@@ -1583,6 +1583,7 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
             <thead>
               <tr>
                 <th>Symbol</th>
+                <th>Strategy</th>
                 <th>Shares</th>
                 <th>Entry</th>
                 <th>Exit</th>
@@ -1595,6 +1596,7 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
               {closedTrades.map((t, i) => (
                 <tr key={`${t.symbol}-${t.closedAt}-${i}`}>
                   <td className="perf-month">{t.symbol}</td>
+                  <td className="perf-month">{t.strategy}</td>
                   <td>{t.shares}</td>
                   <td>${formatCurrency(t.buyPrice)}</td>
                   <td>${formatCurrency(t.sellPrice)}</td>

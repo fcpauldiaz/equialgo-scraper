@@ -16,8 +16,15 @@ import {
   getTradierAccountExposure,
   getTradierPositions,
   placeTradierOrder,
-  getTradierOrderFillPrice,
+  getTradierOrderFill,
+  fetchTradierTradeHistory,
 } from "./tradier-client";
+import {
+  BrokerOrderFill,
+  BrokerTradeTransaction,
+  parseSchwabOrderFill,
+  parseSchwabTradeTransactions,
+} from "./broker-fills";
 import {
   ProcessedSignals,
   TradeExecutionResult,
@@ -53,6 +60,14 @@ const TRADIER_ORDER_TYPE = (process.env.TRADIER_ORDER_TYPE || "market") as "mark
 const SCHWAB_API_BASE_URL =
   process.env.SCHWAB_API_BASE_URL ?? "https://api.schwabapi.com";
 const SCHWAB_PLACE_ORDER_PATH = "/trader/v1/accounts/{accountNumber}/orders";
+const FILL_POLL_ATTEMPTS = Math.max(
+  1,
+  parseInt(process.env.ORDER_FILL_POLL_ATTEMPTS || "8", 10)
+);
+const FILL_POLL_DELAY_MS = Math.max(
+  500,
+  parseInt(process.env.ORDER_FILL_POLL_DELAY_MS || "2000", 10)
+);
 /**
  * Max long equity exposure (sum of position market values) before new buys are clipped.
  * - If `PORTFOLIO_EXPOSURE_CAP` is set: use it; `0` or negative disables enforcement.
@@ -460,7 +475,16 @@ async function placeOrderViaDirectPost(
       throw err;
     }
 
-    return (json as PlaceOrderResponseBody) ?? {};
+    let orderId = (json as PlaceOrderResponseBody | null)?.orderId;
+    if (!orderId) {
+      const location = res.headers.get("location") ?? res.headers.get("Location") ?? "";
+      const match = location.match(/\/orders\/(\d+)\/?$/i);
+      if (match) {
+        orderId = parseInt(match[1], 10);
+      }
+    }
+
+    return { orderId };
   };
 
   let creds = await readSchwabCredentials(portfolioId);
@@ -481,6 +505,115 @@ async function placeOrderViaDirectPost(
     }
     throw err;
   }
+}
+
+async function schwabApiGet(portfolioId: number, path: string): Promise<unknown> {
+  const url = `${SCHWAB_API_BASE_URL}${path}`;
+
+  const doGet = async (accessToken: string): Promise<unknown> => {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const text = await res.text();
+    let json: unknown = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      // ignore
+    }
+    if (!res.ok) {
+      const message =
+        json && typeof json === "object" && "message" in json
+          ? String((json as { message: unknown }).message)
+          : text || res.statusText;
+      const err = new Error(
+        `Schwab GET ${path} failed: ${res.status} ${res.statusText}${message ? ` - ${message}` : ""}`
+      ) as Error & { status?: number };
+      err.status = res.status;
+      throw err;
+    }
+    return json;
+  };
+
+  let creds = await readSchwabCredentials(portfolioId);
+  if (!creds?.accessToken) {
+    throw new Error("Schwab credentials missing or no access token.");
+  }
+
+  try {
+    return await doGet(creds.accessToken);
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    if (status === 401) {
+      await refreshTokensIfNeeded(portfolioId);
+      creds = await readSchwabCredentials(portfolioId);
+      if (creds?.accessToken) {
+        return await doGet(creds.accessToken);
+      }
+    }
+    throw err;
+  }
+}
+
+async function getSchwabOrderFill(
+  portfolioId: number,
+  accountNumber: string,
+  orderId: string
+): Promise<BrokerOrderFill | null> {
+  const path = `/trader/v1/accounts/${encodeURIComponent(accountNumber)}/orders/${encodeURIComponent(orderId)}`;
+  for (let attempt = 0; attempt < FILL_POLL_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, FILL_POLL_DELAY_MS));
+    }
+    try {
+      const json = await schwabApiGet(portfolioId, path);
+      const fill = parseSchwabOrderFill(json);
+      if (fill && fill.avgFillPrice > 0) {
+        return fill;
+      }
+      const status = (json as { status?: string })?.status;
+      if (status === "FILLED" && fill) {
+        return fill;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function mergeOrderFill(
+  symbol: string,
+  action: "BUY" | "SELL",
+  requestedShares: number,
+  signalPrice: number,
+  orderId: string | undefined,
+  fill: BrokerOrderFill | null
+): TradeExecutionResult {
+  const filledShares =
+    fill && fill.filledShares > 0 ? fill.filledShares : requestedShares;
+  const fillPrice =
+    fill && fill.avgFillPrice > 0 ? fill.avgFillPrice : signalPrice;
+
+  if (fill && fill.avgFillPrice > 0) {
+    console.log(
+      `✓ ${action} fill ${symbol}: ${filledShares} sh @ $${fillPrice.toFixed(4)} (signal $${signalPrice.toFixed(2)})`
+    );
+  } else if (orderId) {
+    console.warn(
+      `${action} ${symbol}: order ${orderId} placed but fill price unavailable; using signal $${signalPrice.toFixed(2)}`
+    );
+  }
+
+  return {
+    symbol,
+    action,
+    shares: filledShares,
+    price: fillPrice,
+    success: true,
+    orderId,
+  };
 }
 
 async function getCurrentPositions(
@@ -753,21 +886,17 @@ async function placeBuyOrder(
         price,
         TRADIER_ORDER_TYPE
       );
-      let fillPrice = price;
-      if (orderId) {
-        const actualFill = await getTradierOrderFillPrice(
-          creds.apiKey, accountId, creds.sandbox, orderId
-        );
-        if (actualFill != null) fillPrice = actualFill;
-      }
-      return {
-        symbol,
-        action: "BUY",
-        shares,
-        price: fillPrice,
-        success: true,
-        orderId,
-      };
+      const fill = orderId
+        ? await getTradierOrderFill(
+            creds.apiKey,
+            accountId,
+            creds.sandbox,
+            orderId,
+            FILL_POLL_ATTEMPTS,
+            FILL_POLL_DELAY_MS
+          )
+        : null;
+      return mergeOrderFill(symbol, "BUY", shares, price, orderId, fill);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error(`Failed to place Tradier BUY order for ${symbol}:`, errorMessage);
@@ -837,14 +966,11 @@ async function placeBuyOrder(
       orderBody as Record<string, unknown>
     );
 
-    return {
-      symbol,
-      action: "BUY",
-      shares,
-      price,
-      success: true,
-      orderId: response.orderId?.toString(),
-    };
+    const orderId = response.orderId?.toString();
+    const fill = orderId
+      ? await getSchwabOrderFill(portfolioId, accountNumber, orderId)
+      : null;
+    return mergeOrderFill(symbol, "BUY", shares, price, orderId, fill);
   } catch (error: unknown) {
     if (isSchwabAuthError(error) && (error as { code?: string }).code === "TOKEN_EXPIRED") {
       await refreshTokensIfNeeded(portfolioId);
@@ -918,21 +1044,17 @@ async function placeSellOrder(
         price,
         TRADIER_ORDER_TYPE
       );
-      let fillPrice = price;
-      if (orderId) {
-        const actualFill = await getTradierOrderFillPrice(
-          creds.apiKey, accountId, creds.sandbox, orderId
-        );
-        if (actualFill != null) fillPrice = actualFill;
-      }
-      return {
-        symbol,
-        action: "SELL",
-        shares,
-        price: fillPrice,
-        success: true,
-        orderId,
-      };
+      const fill = orderId
+        ? await getTradierOrderFill(
+            creds.apiKey,
+            accountId,
+            creds.sandbox,
+            orderId,
+            FILL_POLL_ATTEMPTS,
+            FILL_POLL_DELAY_MS
+          )
+        : null;
+      return mergeOrderFill(symbol, "SELL", shares, price, orderId, fill);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error(`Failed to place Tradier SELL order for ${symbol}:`, errorMessage);
@@ -1002,14 +1124,11 @@ async function placeSellOrder(
       orderBody as Record<string, unknown>
     );
 
-    return {
-      symbol,
-      action: "SELL",
-      shares,
-      price,
-      success: true,
-      orderId: response.orderId?.toString(),
-    };
+    const orderId = response.orderId?.toString();
+    const fill = orderId
+      ? await getSchwabOrderFill(portfolioId, accountNumber, orderId)
+      : null;
+    return mergeOrderFill(symbol, "SELL", shares, price, orderId, fill);
   } catch (error: unknown) {
     if (isSchwabAuthError(error) && (error as { code?: string }).code === "TOKEN_EXPIRED") {
       await refreshTokensIfNeeded(portfolioId);
@@ -1583,4 +1702,70 @@ export async function executeTradesFromActions(
   );
 
   return summary;
+}
+
+export async function fetchBrokerOrderFill(
+  portfolioId: number,
+  orderId: string
+): Promise<BrokerOrderFill | null> {
+  const brokerage = await getPortfolioBrokerage(portfolioId);
+  if (brokerage === "tradier") {
+    const creds = await readTradierCredentials(portfolioId);
+    if (!creds) return null;
+    const accountId = await resolveTradierAccountId(portfolioId, creds);
+    return getTradierOrderFill(
+      creds.apiKey,
+      accountId,
+      creds.sandbox,
+      orderId,
+      FILL_POLL_ATTEMPTS,
+      FILL_POLL_DELAY_MS
+    );
+  }
+  if (brokerage === "schwab") {
+    const accountNumber = await getAccountHashFromApi(portfolioId);
+    return getSchwabOrderFill(portfolioId, accountNumber, orderId);
+  }
+  return null;
+}
+
+export async function fetchSchwabTradeTransactions(
+  portfolioId: number,
+  startDate: string,
+  endDate: string
+): Promise<BrokerTradeTransaction[]> {
+  const accountNumber = await getAccountHashFromApi(portfolioId);
+  const start = `${startDate}T00:00:00.000Z`;
+  const end = `${endDate}T23:59:59.999Z`;
+  const path =
+    `/trader/v1/accounts/${encodeURIComponent(accountNumber)}/transactions` +
+    `?startDate=${encodeURIComponent(start)}` +
+    `&endDate=${encodeURIComponent(end)}` +
+    `&types=TRADE`;
+  const json = await schwabApiGet(portfolioId, path);
+  return parseSchwabTradeTransactions(json);
+}
+
+export async function fetchBrokerTradeTransactions(
+  portfolioId: number,
+  startDate: string,
+  endDate: string
+): Promise<BrokerTradeTransaction[]> {
+  const brokerage = await getPortfolioBrokerage(portfolioId);
+  if (brokerage === "schwab") {
+    return fetchSchwabTradeTransactions(portfolioId, startDate, endDate);
+  }
+  if (brokerage === "tradier") {
+    const creds = await readTradierCredentials(portfolioId);
+    if (!creds) return [];
+    const accountId = await resolveTradierAccountId(portfolioId, creds);
+    return fetchTradierTradeHistory(
+      creds.apiKey,
+      accountId,
+      creds.sandbox,
+      startDate,
+      endDate
+    );
+  }
+  return [];
 }

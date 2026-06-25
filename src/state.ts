@@ -1063,6 +1063,63 @@ export async function readTradeExecutionsForAudit(
   }));
 }
 
+export interface TradeExecutionFillRow {
+  id: number;
+  portfolioId: number;
+  symbol: string;
+  action: "BUY" | "SELL";
+  shares: number;
+  price: number;
+  orderId: string | null;
+  executedAt: number;
+}
+
+export async function listTradeExecutionsForFillRefresh(
+  portfolioId?: number
+): Promise<TradeExecutionFillRow[]> {
+  const db = getClient();
+  const filter = portfolioId != null ? "AND portfolio_id = ?" : "";
+  const params = portfolioId != null ? [portfolioId] : [];
+  const result = await db.execute(
+    `SELECT id, portfolio_id, symbol, action, shares, price, order_id, executed_at
+     FROM trade_executions
+     WHERE success = 1 ${filter}
+     ORDER BY executed_at ASC`,
+    params
+  );
+  return (result.rows as unknown as {
+    id: number;
+    portfolio_id: number;
+    symbol: string;
+    action: string;
+    shares: number;
+    price: number;
+    order_id: string | null;
+    executed_at: number;
+  }[]).map((row) => ({
+    id: Number(row.id),
+    portfolioId: Number(row.portfolio_id),
+    symbol: String(row.symbol).toUpperCase(),
+    action: row.action === "SELL" ? "SELL" : "BUY",
+    shares: Number(row.shares),
+    price: Number(row.price),
+    orderId: row.order_id ?? null,
+    executedAt: Number(row.executed_at),
+  }));
+}
+
+export async function updateTradeExecutionFill(
+  id: number,
+  price: number,
+  shares: number
+): Promise<void> {
+  const db = getClient();
+  await db.execute(
+    `UPDATE trade_executions SET price = ?, shares = ? WHERE id = ?`,
+    [price, shares, id]
+  );
+}
+
 export interface PositionCostBasis {
   symbol: string;
   shares: number;
@@ -1118,12 +1175,79 @@ export interface MonthlyPerformance {
 export interface ClosedTrade {
   symbol: string;
   portfolioId: number;
+  strategy: string;
   buyPrice: number;
   sellPrice: number;
   shares: number;
   pnl: number;
   pnlPercent: number;
   closedAt: number;
+}
+
+type ExecutionFifoRow = {
+  portfolio_id: number;
+  symbol: string;
+  shares: number;
+  price: number;
+  executed_at: number;
+  strategy_slug?: string;
+};
+
+function buildClosedTradesFromExecutions(
+  buyRows: ExecutionFifoRow[],
+  sellRows: ExecutionFifoRow[]
+): ClosedTrade[] {
+  type BuyLot = { shares: number; price: number };
+  const lotsByKey = new Map<string, BuyLot[]>();
+
+  for (const row of buyRows) {
+    const key = `${row.portfolio_id}:${row.symbol}`;
+    const lots = lotsByKey.get(key) ?? [];
+    lots.push({ shares: Number(row.shares), price: Number(row.price) });
+    lotsByKey.set(key, lots);
+  }
+
+  const closedTrades: ClosedTrade[] = [];
+  for (const row of sellRows) {
+    const key = `${row.portfolio_id}:${row.symbol}`;
+    const lots = lotsByKey.get(key) ?? [];
+    const sellShares = Number(row.shares);
+    const sellPrice = Number(row.price);
+
+    let remainingSell = sellShares;
+    let totalCostBasis = 0;
+    let matchedShares = 0;
+
+    while (remainingSell > 0 && lots.length > 0) {
+      const lot = lots[0];
+      const take = Math.min(remainingSell, lot.shares);
+      totalCostBasis += take * lot.price;
+      matchedShares += take;
+      remainingSell -= take;
+      lot.shares -= take;
+      if (lot.shares <= 0) lots.shift();
+    }
+
+    if (matchedShares > 0) {
+      const avgBuyPrice = totalCostBasis / matchedShares;
+      const pnl = (sellPrice - avgBuyPrice) * matchedShares;
+      const pnlPercent =
+        avgBuyPrice > 0 ? ((sellPrice - avgBuyPrice) / avgBuyPrice) * 100 : 0;
+      closedTrades.push({
+        symbol: row.symbol,
+        portfolioId: Number(row.portfolio_id),
+        strategy: row.strategy_slug?.trim() || "unknown",
+        buyPrice: avgBuyPrice,
+        sellPrice,
+        shares: matchedShares,
+        pnl,
+        pnlPercent,
+        closedAt: Number(row.executed_at),
+      });
+    }
+  }
+
+  return closedTrades;
 }
 
 export async function readMonthlyPerformance(
@@ -1149,66 +1273,10 @@ export async function readMonthlyPerformance(
     portfolioId != null ? [portfolioId] : []
   );
 
-  type BuyLot = { shares: number; price: number };
-  const lotsByKey = new Map<string, BuyLot[]>();
-
-  for (const row of buysResult.rows as unknown as {
-    portfolio_id: number;
-    symbol: string;
-    shares: number;
-    price: number;
-    executed_at: number;
-  }[]) {
-    const key = `${row.portfolio_id}:${row.symbol}`;
-    const lots = lotsByKey.get(key) ?? [];
-    lots.push({ shares: Number(row.shares), price: Number(row.price) });
-    lotsByKey.set(key, lots);
-  }
-
-  const closedTrades: ClosedTrade[] = [];
-
-  for (const row of sellsResult.rows as unknown as {
-    portfolio_id: number;
-    symbol: string;
-    shares: number;
-    price: number;
-    executed_at: number;
-  }[]) {
-    const key = `${row.portfolio_id}:${row.symbol}`;
-    const lots = lotsByKey.get(key) ?? [];
-    const sellShares = Number(row.shares);
-    const sellPrice = Number(row.price);
-
-    let remainingSell = sellShares;
-    let totalCostBasis = 0;
-    let matchedShares = 0;
-
-    while (remainingSell > 0 && lots.length > 0) {
-      const lot = lots[0];
-      const take = Math.min(remainingSell, lot.shares);
-      totalCostBasis += take * lot.price;
-      matchedShares += take;
-      remainingSell -= take;
-      lot.shares -= take;
-      if (lot.shares <= 0) lots.shift();
-    }
-
-    if (matchedShares > 0) {
-      const avgBuyPrice = totalCostBasis / matchedShares;
-      const pnl = (sellPrice - avgBuyPrice) * matchedShares;
-      const pnlPercent = avgBuyPrice > 0 ? ((sellPrice - avgBuyPrice) / avgBuyPrice) * 100 : 0;
-      closedTrades.push({
-        symbol: row.symbol,
-        portfolioId: Number(row.portfolio_id),
-        buyPrice: avgBuyPrice,
-        sellPrice,
-        shares: matchedShares,
-        pnl,
-        pnlPercent,
-        closedAt: Number(row.executed_at),
-      });
-    }
-  }
+  const closedTrades = buildClosedTradesFromExecutions(
+    buysResult.rows as unknown as ExecutionFifoRow[],
+    sellsResult.rows as unknown as ExecutionFifoRow[]
+  );
 
   const monthlyMap = new Map<string, { pnl: number; wins: number; losses: number; bought: number; sold: number }>();
 
@@ -1369,9 +1437,6 @@ export async function readClosedTrades(
   portfolioId?: number,
   limit = 50
 ): Promise<ClosedTrade[]> {
-  const perf = await readMonthlyPerformance(portfolioId);
-  void perf;
-
   const db = getClient();
   const buysResult = await db.execute(
     `SELECT portfolio_id, symbol, shares, price, executed_at
@@ -1381,60 +1446,25 @@ export async function readClosedTrades(
     portfolioId != null ? [portfolioId] : []
   );
   const sellsResult = await db.execute(
-    `SELECT portfolio_id, symbol, shares, price, executed_at
+    `SELECT portfolio_id, strategy_slug, symbol, shares, price, executed_at
      FROM trade_executions
      WHERE action = 'SELL' AND success = 1 ${portfolioId != null ? "AND portfolio_id = ?" : ""}
-     ORDER BY executed_at DESC
-     LIMIT ?`,
-    portfolioId != null ? [portfolioId, limit] : [limit]
+     ORDER BY executed_at ASC`,
+    portfolioId != null ? [portfolioId] : []
   );
 
-  type BuyLot = { shares: number; price: number };
-  const lotsByKey = new Map<string, BuyLot[]>();
-  for (const row of buysResult.rows as unknown as {
-    portfolio_id: number; symbol: string; shares: number; price: number;
-  }[]) {
-    const key = `${row.portfolio_id}:${row.symbol}`;
-    const lots = lotsByKey.get(key) ?? [];
-    lots.push({ shares: Number(row.shares), price: Number(row.price) });
-    lotsByKey.set(key, lots);
-  }
+  const closedTrades = buildClosedTradesFromExecutions(
+    buysResult.rows as unknown as ExecutionFifoRow[],
+    sellsResult.rows as unknown as ExecutionFifoRow[]
+  );
 
-  const trades: ClosedTrade[] = [];
-  for (const row of sellsResult.rows as unknown as {
-    portfolio_id: number; symbol: string; shares: number; price: number; executed_at: number;
-  }[]) {
-    const key = `${row.portfolio_id}:${row.symbol}`;
-    const lots = lotsByKey.get(key) ?? [];
-    const sellShares = Number(row.shares);
-    let remaining = sellShares;
-    let costBasis = 0;
-    let matched = 0;
-    while (remaining > 0 && lots.length > 0) {
-      const lot = lots[0];
-      const take = Math.min(remaining, lot.shares);
-      costBasis += take * lot.price;
-      matched += take;
-      remaining -= take;
-      lot.shares -= take;
-      if (lot.shares <= 0) lots.shift();
-    }
-    if (matched > 0) {
-      const avgBuy = costBasis / matched;
-      const pnl = (Number(row.price) - avgBuy) * matched;
-      const pnlPct = avgBuy > 0 ? ((Number(row.price) - avgBuy) / avgBuy) * 100 : 0;
-      trades.push({
-        symbol: row.symbol,
-        portfolioId: Number(row.portfolio_id),
-        buyPrice: Math.round(avgBuy * 100) / 100,
-        sellPrice: Number(row.price),
-        shares: matched,
-        pnl: Math.round(pnl * 100) / 100,
-        pnlPercent: Math.round(pnlPct * 10) / 10,
-        closedAt: Number(row.executed_at),
-      });
-    }
-  }
-
-  return trades;
+  return closedTrades
+    .sort((a, b) => b.closedAt - a.closedAt)
+    .slice(0, limit)
+    .map((t) => ({
+      ...t,
+      buyPrice: Math.round(t.buyPrice * 100) / 100,
+      pnl: Math.round(t.pnl * 100) / 100,
+      pnlPercent: Math.round(t.pnlPercent * 10) / 10,
+    }));
 }

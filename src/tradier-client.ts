@@ -1,3 +1,6 @@
+import type { BrokerOrderFill, BrokerTradeTransaction } from "./broker-fills";
+import { parseTradierTradeHistory } from "./broker-fills";
+
 const TRADIER_ENABLE_TRADING = process.env.TRADIER_ENABLE_TRADING === "true";
 const TRADIER_ORDER_TYPE = (process.env.TRADIER_ORDER_TYPE || "market") as "market" | "limit";
 
@@ -310,14 +313,14 @@ export async function placeTradierOrder(
   return { orderId: id != null ? String(id) : undefined };
 }
 
-export async function getTradierOrderFillPrice(
+export async function getTradierOrderFill(
   apiKey: string,
   accountId: string,
   sandbox: boolean,
   orderId: string,
-  maxAttempts = 3,
-  delayMs = 1500
-): Promise<number | null> {
+  maxAttempts = 8,
+  delayMs = 2000
+): Promise<BrokerOrderFill | null> {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (attempt > 0) {
       await new Promise((r) => setTimeout(r, delayMs));
@@ -329,17 +332,87 @@ export async function getTradierOrderFillPrice(
         `/v1/accounts/${encodeURIComponent(accountId)}/orders/${encodeURIComponent(orderId)}`
       );
       if (!res.ok) continue;
-      const data = await res.json() as { order?: { avg_fill_price?: number; status?: string } };
-      const fillPrice = data.order?.avg_fill_price;
-      if (typeof fillPrice === "number" && fillPrice > 0) {
-        return fillPrice;
+      const data = (await res.json()) as {
+        order?: {
+          avg_fill_price?: number;
+          exec_quantity?: number;
+          status?: string;
+        };
+      };
+      const fillPrice = Number(data.order?.avg_fill_price);
+      const execQty = Math.floor(Number(data.order?.exec_quantity) || 0);
+      const status = data.order?.status ?? "";
+
+      if (fillPrice > 0 && execQty > 0) {
+        return { avgFillPrice: fillPrice, filledShares: execQty };
       }
-      if (data.order?.status === "filled") {
-        return fillPrice ?? null;
+      if (status === "filled" && fillPrice > 0) {
+        return { avgFillPrice: fillPrice, filledShares: execQty > 0 ? execQty : 0 };
       }
     } catch {
       continue;
     }
   }
   return null;
+}
+
+export async function getTradierOrderFillPrice(
+  apiKey: string,
+  accountId: string,
+  sandbox: boolean,
+  orderId: string,
+  maxAttempts = 8,
+  delayMs = 2000
+): Promise<number | null> {
+  const fill = await getTradierOrderFill(
+    apiKey,
+    accountId,
+    sandbox,
+    orderId,
+    maxAttempts,
+    delayMs
+  );
+  return fill?.avgFillPrice ?? null;
+}
+
+export async function fetchTradierTradeHistory(
+  apiKey: string,
+  accountId: string,
+  sandbox: boolean,
+  startDate: string,
+  endDate: string
+): Promise<BrokerTradeTransaction[]> {
+  const all: BrokerTradeTransaction[] = [];
+  let page = 1;
+
+  while (true) {
+    const path =
+      `/v1/accounts/${encodeURIComponent(accountId)}/history` +
+      `?type=trade&start=${encodeURIComponent(startDate)}` +
+      `&end=${encodeURIComponent(endDate)}&limit=1000&page=${page}`;
+    const res = await tradierFetch(apiKey, sandbox, path);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(
+        `Tradier history failed (${res.status}): ${text.slice(0, 500)}`
+      );
+    }
+    const json = (await res.json()) as unknown;
+    const batch = parseTradierTradeHistory(json);
+    all.push(...batch);
+    const events = normalizeTradierHistoryEvents(json);
+    if (events.length < 1000) break;
+    page++;
+  }
+
+  return all.sort((a, b) => a.executedAt - b.executedAt);
+}
+
+function normalizeTradierHistoryEvents(payload: unknown): unknown[] {
+  const root = payload as {
+    history?: { event?: unknown | unknown[] };
+  };
+  const event = root.history?.event;
+  if (!event) return [];
+  return Array.isArray(event) ? event : [event];
 }
