@@ -13,6 +13,7 @@ import {
   readMonthlyPerformance,
   readClosedTrades,
   readPerformanceByStrategy,
+  parseAndNormalizeSystemTraderSlug,
 } from "./state";
 import { startSchwabLoginFlow, handleSchwabCallback, isSchwabCallbackPathname, schwabCallbackPathnames } from "./schwab-oauth";
 import { renderSchwabOAuthPage } from "./schwab-oauth-page";
@@ -23,6 +24,8 @@ import {
 } from "./tradier-client";
 import { verifyConnection, getPortfolioPositions } from "./trader";
 import { DAILY_CHECK_TIMEZONE, runCheckForPortfolio } from "./run-check";
+import { auditDaily, auditHistory, auditReportHasFailures } from "./audit-trades";
+import { closeBrowser } from "./scraper";
 
 const UI_PORT = parseInt(process.env.UI_PORT || "3000", 10);
 
@@ -520,6 +523,90 @@ export function startUiServer(): http.Server {
         });
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
+        sendJson(res, 500, { error: message });
+      }
+      return;
+    }
+
+    const auditTradesMatch = pathname.match(/^\/api\/portfolios\/(\d+)\/audit-trades$/);
+    if (auditTradesMatch && method === "POST") {
+      if (!requireAuth(req, res)) return;
+      const portfolioId = parseInt(auditTradesMatch[1], 10);
+      if (Number.isNaN(portfolioId) || portfolioId <= 0) {
+        sendJson(res, 400, { error: "Invalid portfolio id" });
+        return;
+      }
+      try {
+        const body = await parseBody(req);
+        const mode = body.mode === "history" ? "history" : "daily";
+        const slugRaw = typeof body.slug === "string" ? body.slug.trim() : "";
+        if (!slugRaw) {
+          sendJson(res, 400, { error: "slug is required" });
+          return;
+        }
+        const slug = parseAndNormalizeSystemTraderSlug(slugRaw);
+        const portfolios = await listPortfolios();
+        const portfolio = portfolios.find((p) => p.id === portfolioId);
+        if (!portfolio) {
+          sendJson(res, 404, { error: "Portfolio not found" });
+          return;
+        }
+        if (!portfolio.systemtraderSlugs.includes(slug)) {
+          sendJson(res, 400, {
+            error: `Portfolio is not configured for strategy "${slug}"`,
+          });
+          return;
+        }
+        const toleranceShares =
+          typeof body.toleranceShares === "number"
+            ? Math.max(0, Math.floor(body.toleranceShares))
+            : parseInt(String(body.toleranceShares ?? "0"), 10) || 0;
+        const executionLagDays =
+          typeof body.executionLagDays === "number"
+            ? Math.max(0, Math.floor(body.executionLagDays))
+            : parseInt(String(body.executionLagDays ?? "1"), 10);
+        const auditOptions = {
+          toleranceShares: Number.isFinite(toleranceShares) ? toleranceShares : 0,
+          executionLagDays: Number.isFinite(executionLagDays) ? executionLagDays : 1,
+        };
+        const date =
+          typeof body.date === "string" && body.date.trim()
+            ? body.date.trim()
+            : undefined;
+        const from =
+          typeof body.from === "string" && body.from.trim() ? body.from.trim() : undefined;
+        const to =
+          typeof body.to === "string" && body.to.trim() ? body.to.trim() : undefined;
+
+        console.log(
+          `[API] Trade audit: portfolio=${portfolioId} slug=${slug} mode=${mode}`
+        );
+
+        let report;
+        try {
+          if (mode === "history") {
+            const fromDate = from ?? date;
+            const toDate = to ?? from ?? date;
+            if (!fromDate || !toDate) {
+              sendJson(res, 400, { error: "from and to dates are required for history mode" });
+              return;
+            }
+            report = await auditHistory(portfolioId, slug, fromDate, toDate, auditOptions);
+          } else {
+            report = await auditDaily(portfolioId, slug, date, auditOptions);
+          }
+        } finally {
+          await closeBrowser();
+        }
+
+        sendJson(res, 200, {
+          report,
+          hasFailures: auditReportHasFailures(report),
+        });
+      } catch (e) {
+        await closeBrowser().catch(() => undefined);
+        const message = e instanceof Error ? e.message : String(e);
+        console.error(`[API] Trade audit failed portfolioId=${portfolioId}:`, message);
         sendJson(res, 500, { error: message });
       }
       return;

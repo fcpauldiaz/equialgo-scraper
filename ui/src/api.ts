@@ -340,3 +340,76 @@ export async function fetchPortfolioPositions(
   }
   return r.json();
 }
+
+export type AuditDiscrepancyKind =
+  | "missing_execution"
+  | "extra_execution"
+  | "share_mismatch"
+  | "failed_execution";
+
+export interface AuditDiscrepancy {
+  date: string;
+  symbol: string;
+  action: "BUY" | "SELL";
+  expectedShares: number;
+  actualShares: number;
+  kind: AuditDiscrepancyKind;
+  note?: string;
+}
+
+export interface AuditDaySummary {
+  date: string;
+  matched: number;
+  missing: number;
+  extra: number;
+  mismatched: number;
+  failed: number;
+}
+
+export interface AuditReport {
+  mode: "daily" | "history";
+  portfolioId: number;
+  strategySlug: string;
+  fromDate: string;
+  toDate: string;
+  days: AuditDaySummary[];
+  discrepancies: AuditDiscrepancy[];
+  matched: number;
+  missing: number;
+  extra: number;
+  mismatched: number;
+  failed: number;
+}
+
+export interface TradeAuditRequest {
+  mode: "daily" | "history";
+  slug: string;
+  date?: string;
+  from?: string;
+  to?: string;
+  toleranceShares?: number;
+  executionLagDays?: number;
+}
+
+export interface TradeAuditResult {
+  report: AuditReport;
+  hasFailures: boolean;
+}
+
+export async function runTradeAudit(
+  portfolioId: number,
+  body: TradeAuditRequest
+): Promise<TradeAuditResult> {
+  const r = await fetch(`/api/portfolios/${portfolioId}/audit-trades`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  const data = (await r.json().catch(() => ({}))) as TradeAuditResult & {
+    error?: string;
+  };
+  if (!r.ok) {
+    throw new Error(data.error || r.statusText);
+  }
+  return data;
+}

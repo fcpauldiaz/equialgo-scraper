@@ -19,12 +19,15 @@ import {
   fetchTradierPreviewAccounts,
   fetchTradierAccountsForPortfolio,
   updateTradierPortfolioAccount,
+  runTradeAudit,
   SYSTEMTRADER_STRATEGY_SLUGS,
   type PortfolioItem,
   type MonthlyPerformance,
   type StrategyMonthlyPnL,
   type StrategyPerformance,
   type TradierAccountChoice,
+  type AuditReport,
+  type AuditDiscrepancy,
 } from "./api";
 
 const PORTFOLIOS_QUERY_KEY = ["portfolios"] as const;
@@ -224,7 +227,20 @@ function usePortfolioStrategyMutation() {
   });
 }
 
-type Route = { view: "dashboard" | "portfolios" | "portfolio-detail" | "performance"; portfolioId?: number };
+type Route = {
+  view: "dashboard" | "portfolios" | "portfolio-detail" | "performance" | "audit";
+  portfolioId?: number;
+};
+
+function todayIsoDate(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function daysAgoIso(days: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
+}
 
 function getRoute(): Route {
   const hash = window.location.hash.replace(/^#/, "") || "/";
@@ -237,6 +253,9 @@ function getRoute(): Route {
   }
   if (path === "/performance") {
     return { view: "performance" };
+  }
+  if (path === "/audit") {
+    return { view: "audit" };
   }
   const match = path.match(/^\/portfolios\/(\d+)$/);
   if (match) {
@@ -268,6 +287,9 @@ function Nav({
       </a>
       <a href="#/performance" className={route.view === "performance" ? "active" : ""}>
         Performance
+      </a>
+      <a href="#/audit" className={route.view === "audit" ? "active" : ""}>
+        Trade Audit
       </a>
       {authEnabled && (
         <span className="nav-auth">
@@ -1069,6 +1091,325 @@ function PnLBar({
   );
 }
 
+function discrepancyLabel(d: AuditDiscrepancy): string {
+  switch (d.kind) {
+    case "missing_execution":
+      return "MISS";
+    case "extra_execution":
+      return "EXTRA";
+    case "failed_execution":
+      return "FAIL";
+    case "share_mismatch":
+      return "WARN";
+    default:
+      return d.kind;
+  }
+}
+
+function AuditView({
+  portfolios,
+  canWrite,
+}: {
+  portfolios: PortfolioItem[];
+  canWrite: boolean;
+}) {
+  const connected = portfolios.filter((p) => p.hasCredentials);
+  const [portfolioId, setPortfolioId] = useState<number | "">(
+    connected[0]?.id ?? ""
+  );
+  const selectedPortfolio =
+    typeof portfolioId === "number"
+      ? connected.find((p) => p.id === portfolioId)
+      : undefined;
+  const slugOptions = selectedPortfolio?.systemtraderSlugs ?? [];
+  const [slug, setSlug] = useState<string>(slugOptions[0] ?? "gemini");
+  const [mode, setMode] = useState<"daily" | "history">("daily");
+  const [fromDate, setFromDate] = useState(daysAgoIso(7));
+  const [toDate, setToDate] = useState(todayIsoDate());
+  const [toleranceShares, setToleranceShares] = useState(0);
+  const [executionLagDays, setExecutionLagDays] = useState(1);
+  const [result, setResult] = useState<AuditReport | null>(null);
+  const [hasFailures, setHasFailures] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (selectedPortfolio && slugOptions.length > 0 && !slugOptions.includes(slug)) {
+      setSlug(slugOptions[0]);
+    }
+  }, [portfolioId, selectedPortfolio, slugOptions, slug]);
+
+  const handleRun = async () => {
+    if (typeof portfolioId !== "number" || !slug) return;
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const response = await runTradeAudit(portfolioId, {
+        mode,
+        slug,
+        ...(mode === "history"
+          ? { from: fromDate, to: toDate }
+          : {}),
+        toleranceShares,
+        executionLagDays,
+      });
+      setResult(response.report);
+      setHasFailures(response.hasFailures);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const activeDays = result?.days.filter(
+    (d) => d.matched + d.missing + d.extra + d.mismatched + d.failed > 0
+  ) ?? [];
+
+  return (
+    <>
+      <h1>Trade Audit</h1>
+      <p className="perf-subtitle">
+        Compare SystemTrader strategy trades against recorded executions. Scraping may take 1–2
+        minutes.
+      </p>
+
+      {!canWrite && (
+        <p className="audit-auth-note">Log in to run audits (requires admin password).</p>
+      )}
+
+      <div className="audit-form">
+        <div className="audit-form-row">
+          <label>
+            Portfolio
+            <select
+              value={portfolioId}
+              onChange={(e) =>
+                setPortfolioId(e.target.value ? parseInt(e.target.value, 10) : "")
+              }
+              disabled={loading || connected.length === 0}
+            >
+              {connected.length === 0 && <option value="">No connected portfolios</option>}
+              {connected.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Strategy
+            <select
+              value={slug}
+              onChange={(e) => setSlug(e.target.value)}
+              disabled={loading || slugOptions.length === 0}
+            >
+              {(slugOptions.length > 0 ? slugOptions : [...SYSTEMTRADER_STRATEGY_SLUGS]).map(
+                (s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                )
+              )}
+            </select>
+          </label>
+          <label>
+            Mode
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value as "daily" | "history")}
+              disabled={loading}
+            >
+              <option value="daily">Daily (today&apos;s actions)</option>
+              <option value="history">History (All Trades page)</option>
+            </select>
+          </label>
+        </div>
+
+        {mode === "history" && (
+          <div className="audit-form-row">
+            <label>
+              From
+              <input
+                type="date"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                disabled={loading}
+              />
+            </label>
+            <label>
+              To
+              <input
+                type="date"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                disabled={loading}
+              />
+            </label>
+          </div>
+        )}
+
+        <div className="audit-form-row">
+          <label>
+            Share tolerance
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={toleranceShares}
+              onChange={(e) => setToleranceShares(parseInt(e.target.value, 10) || 0)}
+              disabled={loading}
+            />
+          </label>
+          <label>
+            Execution lag (days)
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={executionLagDays}
+              onChange={(e) => setExecutionLagDays(parseInt(e.target.value, 10) || 0)}
+              disabled={loading}
+            />
+          </label>
+        </div>
+
+        <button
+          type="button"
+          className="audit-run-btn"
+          onClick={handleRun}
+          disabled={
+            loading ||
+            !canWrite ||
+            typeof portfolioId !== "number" ||
+            connected.length === 0
+          }
+        >
+          {loading ? "Running audit…" : "Run audit"}
+        </button>
+      </div>
+
+      {loading && (
+        <p className="audit-loading">
+          Scraping SystemTrader and comparing with trade_executions…
+        </p>
+      )}
+      {error && <p className="error-msg">{error}</p>}
+
+      {result && (
+        <>
+          <div
+            className={`audit-status-banner ${hasFailures ? "audit-status-fail" : "audit-status-ok"}`}
+          >
+            {hasFailures
+              ? "Discrepancies found — review details below."
+              : "All strategy trades match recorded executions."}
+          </div>
+
+          <div className="perf-summary">
+            <div className="perf-summary-card">
+              <span className="perf-summary-value perf-positive">{result.matched}</span>
+              <span className="perf-summary-label">Matched</span>
+            </div>
+            <div className="perf-summary-card">
+              <span className="perf-summary-value perf-negative">{result.missing}</span>
+              <span className="perf-summary-label">Missing</span>
+            </div>
+            <div className="perf-summary-card">
+              <span className="perf-summary-value">{result.extra}</span>
+              <span className="perf-summary-label">Extra</span>
+            </div>
+            <div className="perf-summary-card">
+              <span className="perf-summary-value perf-negative">{result.mismatched}</span>
+              <span className="perf-summary-label">Share mismatch</span>
+            </div>
+            <div className="perf-summary-card">
+              <span className="perf-summary-value perf-negative">{result.failed}</span>
+              <span className="perf-summary-label">Failed</span>
+            </div>
+          </div>
+
+          {activeDays.length > 0 && (
+            <>
+              <h2>By day</h2>
+              <table className="perf-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Matched</th>
+                    <th>Missing</th>
+                    <th>Extra</th>
+                    <th>Mismatch</th>
+                    <th>Failed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {activeDays.map((d) => (
+                    <tr key={d.date}>
+                      <td className="perf-month">{d.date}</td>
+                      <td className="perf-positive">{d.matched}</td>
+                      <td className={d.missing > 0 ? "perf-negative" : ""}>{d.missing}</td>
+                      <td>{d.extra}</td>
+                      <td className={d.mismatched > 0 ? "perf-negative" : ""}>
+                        {d.mismatched}
+                      </td>
+                      <td className={d.failed > 0 ? "perf-negative" : ""}>{d.failed}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+
+          {result.discrepancies.length > 0 && (
+            <>
+              <h2>Discrepancies</h2>
+              <table className="perf-table audit-disc-table">
+                <thead>
+                  <tr>
+                    <th>Status</th>
+                    <th>Date</th>
+                    <th>Symbol</th>
+                    <th>Action</th>
+                    <th>Expected</th>
+                    <th>Actual</th>
+                    <th>Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.discrepancies.map((d, i) => (
+                    <tr key={`${d.date}-${d.symbol}-${d.action}-${i}`}>
+                      <td>
+                        <span className={`audit-tag audit-tag-${d.kind}`}>
+                          {discrepancyLabel(d)}
+                        </span>
+                      </td>
+                      <td>{d.date}</td>
+                      <td className="perf-month">{d.symbol}</td>
+                      <td>{d.action}</td>
+                      <td>
+                        {d.note === "Strategy exit with no successful sell" ||
+                        (d.expectedShares === 0 &&
+                          d.action === "SELL" &&
+                          d.kind !== "extra_execution")
+                          ? "exit"
+                          : d.expectedShares}
+                      </td>
+                      <td>{d.actualShares}</td>
+                      <td className="audit-note">{d.note ?? ""}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
 function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | undefined>(undefined);
 
@@ -1484,6 +1825,9 @@ export default function App() {
       )}
       {route.view === "performance" && (
         <PerformanceView portfolios={portfolios} />
+      )}
+      {route.view === "audit" && (
+        <AuditView portfolios={portfolios} canWrite={canWrite} />
       )}
       {route.view === "portfolio-detail" && route.portfolioId != null && (
         <PortfolioDetailView

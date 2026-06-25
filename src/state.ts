@@ -49,6 +49,11 @@ export function resolveSystemTraderPortfolioUrl(slug: string): string {
   return `https://www.systemtrader.co/${s}/portfolio`;
 }
 
+export function resolveSystemTraderTradesUrl(slug: string): string {
+  const s = slug.trim().toLowerCase();
+  return `https://www.systemtrader.co/${s}/trades`;
+}
+
 export function isPortfolioUrlEnvOverride(): boolean {
   return Boolean(process.env.PORTFOLIO_URL?.trim());
 }
@@ -1005,6 +1010,57 @@ export async function persistTradeExecutions(
       ]
     );
   }
+}
+
+export interface TradeExecutionAuditRow {
+  symbol: string;
+  action: "BUY" | "SELL";
+  shares: number;
+  price: number;
+  success: boolean;
+  orderId: string | null;
+  error: string | null;
+  executedAt: number;
+}
+
+export async function readTradeExecutionsForAudit(
+  portfolioId: number,
+  strategySlug: string,
+  fromMs: number,
+  toMs: number
+): Promise<TradeExecutionAuditRow[]> {
+  const db = getClient();
+  const slug = parseAndNormalizeSystemTraderSlug(strategySlug);
+  const result = await db.execute(
+    `SELECT symbol, action, shares, price, success, order_id, error, executed_at
+     FROM trade_executions
+     WHERE portfolio_id = ?
+       AND lower(trim(strategy_slug)) = ?
+       AND executed_at >= ?
+       AND executed_at < ?
+     ORDER BY executed_at ASC`,
+    [portfolioId, slug, fromMs, toMs]
+  );
+
+  return (result.rows as unknown as {
+    symbol: string;
+    action: string;
+    shares: number;
+    price: number;
+    success: number;
+    order_id: string | null;
+    error: string | null;
+    executed_at: number;
+  }[]).map((row) => ({
+    symbol: String(row.symbol).toUpperCase(),
+    action: row.action === "SELL" ? "SELL" : "BUY",
+    shares: Number(row.shares),
+    price: Number(row.price),
+    success: Number(row.success) === 1,
+    orderId: row.order_id ?? null,
+    error: row.error ?? null,
+    executedAt: Number(row.executed_at),
+  }));
 }
 
 export interface PositionCostBasis {

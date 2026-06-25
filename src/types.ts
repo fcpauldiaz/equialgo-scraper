@@ -99,3 +99,59 @@ export interface TradeExecutionSummary {
   /** True when *_ENABLE_TRADING is off — no orders were attempted */
   tradingDisabled?: boolean;
 }
+
+export interface StrategyTrade {
+  date: string;
+  symbol: string;
+  action: "BUY" | "SELL";
+  shares: number;
+  price: number;
+  buyKind?: PortfolioBuyKind;
+  sellKind?: PortfolioSellKind;
+}
+
+export interface ScrapedStrategyTrades {
+  slug: string;
+  lastUpdated: string | null;
+  trades: StrategyTrade[];
+}
+
+export type AuditDiscrepancyKind =
+  | "missing_execution"
+  | "extra_execution"
+  | "share_mismatch"
+  | "failed_execution";
+
+export interface AuditDiscrepancy {
+  date: string;
+  symbol: string;
+  action: "BUY" | "SELL";
+  expectedShares: number;
+  actualShares: number;
+  kind: AuditDiscrepancyKind;
+  note?: string;
+}
+
+export interface AuditDaySummary {
+  date: string;
+  matched: number;
+  missing: number;
+  extra: number;
+  mismatched: number;
+  failed: number;
+}
+
+export interface AuditReport {
+  mode: "daily" | "history";
+  portfolioId: number;
+  strategySlug: string;
+  fromDate: string;
+  toDate: string;
+  days: AuditDaySummary[];
+  discrepancies: AuditDiscrepancy[];
+  matched: number;
+  missing: number;
+  extra: number;
+  mismatched: number;
+  failed: number;
+}

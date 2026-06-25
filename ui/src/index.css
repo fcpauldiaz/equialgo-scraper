@@ -541,6 +541,137 @@ input:focus, select:focus {
 .perf-buy { color: var(--color-positive); }
 .perf-sell { color: var(--color-negative); }
 
+/* Trade audit */
+
+.audit-auth-note {
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+  margin: 0 0 var(--space-16);
+}
+
+.audit-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  margin-bottom: var(--space-32);
+  padding: var(--space-24);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.audit-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-16) var(--space-24);
+}
+
+.audit-form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+  min-width: 10rem;
+}
+
+.audit-form select,
+.audit-form input[type="date"],
+.audit-form input[type="number"] {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  padding: var(--space-8) var(--space-8);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+.audit-run-btn {
+  align-self: flex-start;
+  padding: var(--space-8) var(--space-16);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  border: 1px solid var(--color-ink);
+  border-radius: var(--radius-sm);
+  background: var(--color-ink);
+  color: var(--color-paper);
+  cursor: pointer;
+}
+
+.audit-run-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.audit-loading {
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+  margin-bottom: var(--space-16);
+}
+
+.audit-status-banner {
+  padding: var(--space-12) var(--space-16);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-24);
+}
+
+.audit-status-ok {
+  background: color-mix(in srgb, var(--color-positive) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-positive) 35%, transparent);
+  color: var(--color-positive);
+}
+
+.audit-status-fail {
+  background: color-mix(in srgb, var(--color-negative) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-negative) 35%, transparent);
+  color: var(--color-negative);
+}
+
+.audit-disc-table th:first-child,
+.audit-disc-table td:first-child,
+.audit-disc-table .audit-note {
+  text-align: left;
+  white-space: normal;
+}
+
+.audit-tag {
+  display: inline-block;
+  padding: 0.125rem 0.375rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.audit-tag-missing_execution {
+  background: color-mix(in srgb, var(--color-negative) 18%, transparent);
+  color: var(--color-negative);
+}
+
+.audit-tag-extra_execution {
+  background: color-mix(in srgb, var(--color-muted) 20%, transparent);
+  color: var(--color-muted);
+}
+
+.audit-tag-share_mismatch {
+  background: color-mix(in srgb, #c9a227 20%, transparent);
+  color: #8a6914;
+}
+
+.audit-tag-failed_execution {
+  background: color-mix(in srgb, var(--color-negative) 25%, transparent);
+  color: var(--color-negative);
+}
+
+.audit-note {
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+  max-width: 16rem;
+}
+
 .perf-bar-cell {
   width: 5.5rem;
   min-width: 5.5rem;
