@@ -24,7 +24,6 @@ import {
   SYSTEMTRADER_STRATEGY_SLUGS,
   type PortfolioItem,
   type MonthlyPerformance,
-  type StrategyMonthlyPnL,
   type StrategyPerformance,
   type TradierAccountChoice,
   type AuditReport,
@@ -1160,12 +1159,43 @@ function formatCurrency(value: number): string {
   });
 }
 
-function StrategyChart({ strategy }: { strategy: StrategyPerformance }) {
-  const points = strategy.monthlyPnL;
+type PerformanceChartPoint = {
+  month: string;
+  pnl: number;
+  cumulativePnL: number;
+  totalBought: number;
+};
+
+function buildPortfolioHistoricPoints(monthly: MonthlyPerformance[]): PerformanceChartPoint[] {
+  let cumulative = 0;
+  return [...monthly]
+    .sort((a, b) => a.month.localeCompare(b.month))
+    .map((m) => {
+      cumulative += m.realizedPnL;
+      return {
+        month: m.month,
+        pnl: m.realizedPnL,
+        cumulativePnL: Math.round(cumulative * 100) / 100,
+        totalBought: m.totalBought,
+      };
+    });
+}
+
+function CumulativePerformanceChart({
+  title,
+  points,
+  returnPercent,
+  variant = "strategy",
+}: {
+  title: string;
+  points: PerformanceChartPoint[];
+  returnPercent: (point: PerformanceChartPoint) => number;
+  variant?: "strategy" | "historic";
+}) {
   if (points.length === 0) return null;
 
   const width = 680;
-  const height = 140;
+  const height = variant === "historic" ? 200 : 140;
   const padX = 48;
   const padY = 24;
   const chartW = width - padX * 2;
@@ -1176,43 +1206,75 @@ function StrategyChart({ strategy }: { strategy: StrategyPerformance }) {
   const minVal = Math.min(...values, 0);
   const range = maxVal - minVal || 1;
 
-  const toX = (i: number) => points.length === 1 ? padX + chartW / 2 : padX + (i / (points.length - 1)) * chartW;
+  const toX = (i: number) =>
+    points.length === 1 ? padX + chartW / 2 : padX + (i / (points.length - 1)) * chartW;
   const toY = (v: number) => padY + ((maxVal - v) / range) * chartH;
 
   const zeroY = toY(0);
   const pathD = points
     .map((p, i) => `${i === 0 ? "M" : "L"} ${toX(i).toFixed(1)} ${toY(p.cumulativePnL).toFixed(1)}`)
     .join(" ");
+  const areaD = `${pathD} L ${toX(points.length - 1).toFixed(1)} ${zeroY.toFixed(1)} L ${toX(0).toFixed(1)} ${zeroY.toFixed(1)} Z`;
 
   const lastVal = values[values.length - 1];
   const lineColor = lastVal >= 0 ? "var(--color-positive)" : "var(--color-negative)";
+  const areaColor =
+    lastVal >= 0
+      ? "color-mix(in srgb, var(--color-positive) 12%, transparent)"
+      : "color-mix(in srgb, var(--color-negative) 12%, transparent)";
 
   return (
-    <div className="strategy-chart">
+    <div className={`strategy-chart ${variant === "historic" ? "historic-performance-chart" : ""}`}>
       <h3 className="strategy-chart-title">
-        {strategy.strategy}
+        {title}
         <span className={lastVal >= 0 ? "perf-positive" : "perf-negative"}>
           {lastVal >= 0 ? "+" : ""}${formatCurrency(lastVal)}
         </span>
       </h3>
       <svg viewBox={`0 0 ${width} ${height}`} className="strategy-chart-svg">
+        {variant === "historic" && (
+          <path d={areaD} fill={areaColor} stroke="none" />
+        )}
         <line
-          x1={padX} y1={zeroY} x2={width - padX} y2={zeroY}
-          stroke="var(--color-rule)" strokeWidth="1" strokeDasharray="4 3"
+          x1={padX}
+          y1={zeroY}
+          x2={width - padX}
+          y2={zeroY}
+          stroke="var(--color-rule)"
+          strokeWidth="1"
+          strokeDasharray="4 3"
         />
         {points.map((_, i) => (
-          <line key={i} x1={toX(i)} y1={padY} x2={toX(i)} y2={height - padY}
-            stroke="var(--color-rule)" strokeWidth="0.5" opacity="0.3"
+          <line
+            key={i}
+            x1={toX(i)}
+            y1={padY}
+            x2={toX(i)}
+            y2={height - padY}
+            stroke="var(--color-rule)"
+            strokeWidth="0.5"
+            opacity="0.3"
           />
         ))}
-        <path d={pathD} fill="none" stroke={lineColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        <path
+          d={pathD}
+          fill="none"
+          stroke={lineColor}
+          strokeWidth={variant === "historic" ? 2.5 : 2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
         {points.map((p, i) => (
-          <circle key={i} cx={toX(i)} cy={toY(p.cumulativePnL)} r="3"
+          <circle
+            key={i}
+            cx={toX(i)}
+            cy={toY(p.cumulativePnL)}
+            r={variant === "historic" ? 4 : 3}
             fill={p.cumulativePnL >= 0 ? "var(--color-positive)" : "var(--color-negative)"}
           />
         ))}
         {points.map((p, i) => {
-          const pct = strategyMonthlyReturnPercent(p);
+          const pct = returnPercent(p);
           const pctClass = pct >= 0 ? "var(--color-positive)" : "var(--color-negative)";
           return (
             <g key={`lbl-${i}`}>
@@ -1226,8 +1288,12 @@ function StrategyChart({ strategy }: { strategy: StrategyPerformance }) {
               >
                 {formatPercent(pct)}
               </text>
-              <text x={toX(i)} y={height - 4}
-                textAnchor="middle" fill="var(--color-ink-2)" fontSize="9"
+              <text
+                x={toX(i)}
+                y={height - 4}
+                textAnchor="middle"
+                fill="var(--color-ink-2)"
+                fontSize="9"
               >
                 {p.month.slice(5)}
               </text>
@@ -1245,6 +1311,23 @@ function StrategyChart({ strategy }: { strategy: StrategyPerformance }) {
   );
 }
 
+function StrategyChart({ strategy }: { strategy: StrategyPerformance }) {
+  const points: PerformanceChartPoint[] = strategy.monthlyPnL.map((p) => ({
+    month: p.month,
+    pnl: p.pnl,
+    cumulativePnL: p.cumulativePnL,
+    totalBought: p.totalBought,
+  }));
+
+  return (
+    <CumulativePerformanceChart
+      title={strategy.strategy}
+      points={points}
+      returnPercent={strategyMonthlyReturnPercent}
+    />
+  );
+}
+
 function formatPercent(value: number): string {
   const rounded = Math.round(value * 10) / 10;
   const sign = rounded > 0 ? "+" : "";
@@ -1256,7 +1339,7 @@ function monthlyReturnPercent(m: MonthlyPerformance): number {
   return (m.realizedPnL / m.totalBought) * 100;
 }
 
-function strategyMonthlyReturnPercent(p: StrategyMonthlyPnL): number {
+function strategyMonthlyReturnPercent(p: PerformanceChartPoint): number {
   if (p.totalBought <= 0) return 0;
   return (p.pnl / p.totalBought) * 100;
 }
@@ -1638,6 +1721,11 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
     ? Math.max(...monthly.map((m) => Math.abs(m.realizedPnL)), 1)
     : 1;
 
+  const portfolioLabel = selectedPortfolioId
+    ? portfolios.find((p) => p.id === selectedPortfolioId)?.name ?? "Portfolio"
+    : "All portfolios";
+  const historicPoints = buildPortfolioHistoricPoints(monthly);
+
   return (
     <>
       <h1>Performance</h1>
@@ -1700,6 +1788,17 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
 
       {monthly.length > 0 && (
         <>
+          <h2>Historic Performance</h2>
+          <p className="perf-subtitle">
+            Cumulative realized P&L for {portfolioLabel.toLowerCase()} by month.
+          </p>
+          <CumulativePerformanceChart
+            title={portfolioLabel}
+            points={historicPoints}
+            returnPercent={strategyMonthlyReturnPercent}
+            variant="historic"
+          />
+
           <h2>Monthly P&L</h2>
           <table className="perf-table">
             <thead>

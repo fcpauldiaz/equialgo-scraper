@@ -791,6 +791,14 @@ input:focus, select:focus {
 
 .strategy-chart-svg { width: 100%; height: auto; display: block; }
 
+.historic-performance-chart {
+  margin-top: var(--space-8);
+}
+
+.historic-performance-chart .strategy-chart-title {
+  font-size: var(--text-base);
+}
+
 /* Auth */
 
 .nav-auth { margin-left: auto; }
