@@ -1696,6 +1696,41 @@ function AuditView({
   );
 }
 
+function buildStrategyPerformanceRows(
+  byStrategy: StrategyPerformance[],
+  openByStrategy: { strategy: string; openPnL: number }[]
+) {
+  const realizedByKey = new Map(byStrategy.map((s) => [s.strategy, s]));
+  const openByKey = new Map(openByStrategy.map((s) => [s.strategy, s.openPnL]));
+  const keys = new Set([...realizedByKey.keys(), ...openByKey.keys()]);
+
+  return Array.from(keys)
+    .map((strategy) => {
+      const realized = realizedByKey.get(strategy);
+      const openPnL = openByKey.get(strategy) ?? null;
+      const realizedPnL = realized?.realizedPnL ?? 0;
+      const combinedPnL =
+        openPnL != null ? realizedPnL + openPnL : realized ? realizedPnL : null;
+
+      return {
+        strategy,
+        realizedPnL,
+        openPnL,
+        combinedPnL,
+        closedTrades: realized?.closedTrades ?? 0,
+        winRate: realized?.winRate ?? 0,
+        monthlyPnL: realized?.monthlyPnL ?? [],
+      };
+    })
+    .sort((a, b) => {
+      if (a.strategy === "unassigned" && b.strategy !== "unassigned") return 1;
+      if (b.strategy === "unassigned" && a.strategy !== "unassigned") return -1;
+      const aSort = a.combinedPnL ?? a.realizedPnL;
+      const bSort = b.combinedPnL ?? b.realizedPnL;
+      return bSort - aSort;
+    });
+}
+
 function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | undefined>(undefined);
 
@@ -1707,6 +1742,8 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
   const monthly = data?.monthly ?? [];
   const closedTrades = data?.closedTrades ?? [];
   const byStrategy = data?.byStrategy ?? [];
+  const openByStrategy = data?.open?.byStrategy ?? [];
+  const openPnL = data?.open?.totalOpenPnL ?? null;
 
   const totals = monthly.reduce(
     (acc, m) => ({
@@ -1717,6 +1754,12 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
     }),
     { pnl: 0, closed: 0, wins: 0, losses: 0 }
   );
+
+  const realizedPnL = totals.pnl;
+  const combinedPnL = openPnL != null ? realizedPnL + openPnL : null;
+  const strategyRows = buildStrategyPerformanceRows(byStrategy, openByStrategy);
+  const hasClosedTradeStats = totals.closed > 0;
+  const hasPerformanceData = hasClosedTradeStats || openPnL != null;
 
   const overallWinRate = totals.closed > 0
     ? Math.round((totals.wins / totals.closed) * 1000) / 10
@@ -1734,7 +1777,9 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
   return (
     <>
       <h1>Performance</h1>
-      <p className="perf-subtitle">Month-to-month trade P&L from closed positions.</p>
+      <p className="perf-subtitle">
+        Total P&L combines realized gains from closed trades with open P&L on current holdings.
+      </p>
 
       <div className="perf-filter">
         <label>
@@ -1758,37 +1803,75 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
       {isLoading && <p>Loading performance data…</p>}
       {error && <p className="error-msg">{String(error)}</p>}
 
-      {monthly.length > 0 && (
+      {hasPerformanceData && !isLoading && (
         <div className="perf-summary">
           <div className="perf-summary-card">
-            <span className={`perf-summary-value ${totals.pnl >= 0 ? "perf-positive" : "perf-negative"}`}>
-              {totals.pnl >= 0 ? "+" : ""}${formatCurrency(totals.pnl)}
+            <span
+              className={`perf-summary-value ${
+                combinedPnL != null
+                  ? combinedPnL >= 0
+                    ? "perf-positive"
+                    : "perf-negative"
+                  : realizedPnL >= 0
+                    ? "perf-positive"
+                    : "perf-negative"
+              }`}
+            >
+              {combinedPnL != null
+                ? `${combinedPnL >= 0 ? "+" : ""}$${formatCurrency(combinedPnL)}`
+                : `${realizedPnL >= 0 ? "+" : ""}$${formatCurrency(realizedPnL)}`}
             </span>
             <span className="perf-summary-label">Total P&L</span>
           </div>
           <div className="perf-summary-card">
-            <span className="perf-summary-value">{totals.closed}</span>
-            <span className="perf-summary-label">Closed Trades</span>
-          </div>
-          <div className="perf-summary-card">
-            <span className="perf-summary-value perf-positive">{totals.wins}</span>
-            <span className="perf-summary-label">Winners</span>
-          </div>
-          <div className="perf-summary-card">
-            <span className="perf-summary-value perf-negative">{totals.losses}</span>
-            <span className="perf-summary-label">Losers</span>
-          </div>
-          <div className="perf-summary-card">
-            <span className={`perf-summary-value ${overallWinRate >= 50 ? "perf-positive" : "perf-negative"}`}>
-              {overallWinRate}%
+            <span className={`perf-summary-value ${realizedPnL >= 0 ? "perf-positive" : "perf-negative"}`}>
+              {realizedPnL >= 0 ? "+" : ""}${formatCurrency(realizedPnL)}
             </span>
-            <span className="perf-summary-label">Win Rate</span>
+            <span className="perf-summary-label">Realized P&L</span>
           </div>
+          <div className="perf-summary-card">
+            <span
+              className={`perf-summary-value ${
+                openPnL == null ? "" : openPnL >= 0 ? "perf-positive" : "perf-negative"
+              }`}
+            >
+              {openPnL == null
+                ? "—"
+                : `${openPnL >= 0 ? "+" : ""}$${formatCurrency(openPnL)}`}
+            </span>
+            <span className="perf-summary-label">Open P&L</span>
+          </div>
+          {hasClosedTradeStats && (
+            <>
+              <div className="perf-summary-card">
+                <span className="perf-summary-value">{totals.closed}</span>
+                <span className="perf-summary-label">Closed Trades</span>
+              </div>
+              <div className="perf-summary-card">
+                <span className="perf-summary-value perf-positive">{totals.wins}</span>
+                <span className="perf-summary-label">Winners</span>
+              </div>
+              <div className="perf-summary-card">
+                <span className="perf-summary-value perf-negative">{totals.losses}</span>
+                <span className="perf-summary-label">Losers</span>
+              </div>
+              <div className="perf-summary-card">
+                <span
+                  className={`perf-summary-value ${
+                    overallWinRate >= 50 ? "perf-positive" : "perf-negative"
+                  }`}
+                >
+                  {overallWinRate}%
+                </span>
+                <span className="perf-summary-label">Win Rate</span>
+              </div>
+            </>
+          )}
         </div>
       )}
 
-      {monthly.length === 0 && !isLoading && (
-        <p className="perf-empty">No closed trades yet. Performance tracks realized P&L when positions are sold.</p>
+      {!hasPerformanceData && !isLoading && !error && (
+        <p className="perf-empty">No closed trades or open positions yet.</p>
       )}
 
       {monthly.length > 0 && (
@@ -1844,28 +1927,52 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
         </>
       )}
 
-      {byStrategy.length > 0 && (
+      {strategyRows.length > 0 && (
         <>
           <h2>Performance by Strategy</h2>
           <table className="perf-table">
             <thead>
               <tr>
                 <th>Strategy</th>
-                <th>P&L</th>
+                <th>Total P&L</th>
+                <th>Realized</th>
+                <th>Open</th>
                 <th>Trades</th>
                 <th>Win Rate</th>
               </tr>
             </thead>
             <tbody>
-              {byStrategy.map((s: StrategyPerformance) => (
+              {strategyRows.map((s) => (
                 <tr key={s.strategy}>
                   <td className="perf-month">{formatStrategyName(s.strategy)}</td>
+                  <td
+                    className={
+                      s.combinedPnL != null
+                        ? s.combinedPnL >= 0
+                          ? "perf-positive"
+                          : "perf-negative"
+                        : ""
+                    }
+                  >
+                    {s.combinedPnL != null
+                      ? `${s.combinedPnL >= 0 ? "+" : ""}$${formatCurrency(s.combinedPnL)}`
+                      : "—"}
+                  </td>
                   <td className={s.realizedPnL >= 0 ? "perf-positive" : "perf-negative"}>
                     {s.realizedPnL >= 0 ? "+" : ""}${formatCurrency(s.realizedPnL)}
                   </td>
+                  <td
+                    className={
+                      s.openPnL == null ? "" : s.openPnL >= 0 ? "perf-positive" : "perf-negative"
+                    }
+                  >
+                    {s.openPnL == null
+                      ? "—"
+                      : `${s.openPnL >= 0 ? "+" : ""}$${formatCurrency(s.openPnL)}`}
+                  </td>
                   <td>{s.closedTrades}</td>
                   <td className={s.winRate >= 50 ? "perf-positive" : "perf-negative"}>
-                    {s.winRate}%
+                    {s.closedTrades > 0 ? `${s.winRate}%` : "—"}
                   </td>
                 </tr>
               ))}

@@ -309,10 +309,21 @@ export interface StrategyPerformance {
   monthlyPnL: StrategyMonthlyPnL[];
 }
 
+export interface StrategyOpenPnL {
+  strategy: string;
+  openPnL: number;
+}
+
+export interface OpenPerformanceSummary {
+  totalOpenPnL: number | null;
+  byStrategy: StrategyOpenPnL[];
+}
+
 export interface PerformanceData {
   monthly: MonthlyPerformance[];
   closedTrades: ClosedTrade[];
   byStrategy: StrategyPerformance[];
+  open: OpenPerformanceSummary;
 }
 
 export async function fetchPerformance(

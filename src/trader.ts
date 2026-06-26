@@ -4,6 +4,7 @@ import {
   readTradierCredentials,
   writeTradierCredentials,
   getPortfolioBrokerage,
+  listPortfolios,
   loadStrategySleeveSymbols,
   listPortfolioSystemTraderSlugs,
   loadStrategySleeveSymbolsGrouped,
@@ -11,6 +12,7 @@ import {
   normalizeTickerSymbol,
   parseAndNormalizeSystemTraderSlug,
   removeStrategySleeveSymbol,
+  UNASSIGNED_STRATEGY,
   type SchwabCredentials,
 } from "./state";
 import {
@@ -1091,6 +1093,76 @@ export async function getHoldingsByStrategy(
     unassignedTotalOpenPnL: sumDefinedValues(
       unassigned.map((p) => p.longOpenProfitLoss)
     ),
+  };
+}
+
+export type StrategyOpenPnL = {
+  strategy: string;
+  openPnL: number;
+};
+
+export type OpenPerformanceSummary = {
+  totalOpenPnL: number | null;
+  byStrategy: StrategyOpenPnL[];
+};
+
+export async function readOpenPerformanceSummary(
+  portfolioId?: number
+): Promise<OpenPerformanceSummary> {
+  const portfolios = await listPortfolios();
+  const targets =
+    portfolioId != null
+      ? portfolios.filter((p) => p.id === portfolioId)
+      : portfolios;
+
+  const strategyTotals = new Map<string, number>();
+  let totalOpenPnL = 0;
+  let hasOpenPnL = false;
+
+  for (const portfolio of targets) {
+    if (!portfolio.hasCredentials) continue;
+    try {
+      const report = await getHoldingsByStrategy(portfolio.id);
+      for (const group of report.byStrategy) {
+        if (group.totalOpenPnL != null) {
+          hasOpenPnL = true;
+          totalOpenPnL += group.totalOpenPnL;
+          strategyTotals.set(
+            group.strategy,
+            (strategyTotals.get(group.strategy) ?? 0) + group.totalOpenPnL
+          );
+        }
+      }
+      if (report.unassignedTotalOpenPnL != null) {
+        hasOpenPnL = true;
+        totalOpenPnL += report.unassignedTotalOpenPnL;
+        strategyTotals.set(
+          UNASSIGNED_STRATEGY,
+          (strategyTotals.get(UNASSIGNED_STRATEGY) ?? 0) + report.unassignedTotalOpenPnL
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[performance] open P/L for portfolio ${portfolio.id}:`,
+        error instanceof Error ? error.message : error
+      );
+    }
+  }
+
+  const byStrategy = Array.from(strategyTotals.entries())
+    .map(([strategy, openPnL]) => ({
+      strategy,
+      openPnL: Math.round(openPnL * 100) / 100,
+    }))
+    .sort((a, b) => {
+      if (a.strategy === UNASSIGNED_STRATEGY && b.strategy !== UNASSIGNED_STRATEGY) return 1;
+      if (b.strategy === UNASSIGNED_STRATEGY && a.strategy !== UNASSIGNED_STRATEGY) return -1;
+      return b.openPnL - a.openPnL;
+    });
+
+  return {
+    totalOpenPnL: hasOpenPnL ? Math.round(totalOpenPnL * 100) / 100 : null,
+    byStrategy,
   };
 }
 

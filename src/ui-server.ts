@@ -22,7 +22,7 @@ import {
   isTradierAccountInProfileList,
   listTradierAccountsForKey,
 } from "./tradier-client";
-import { verifyConnection, getPortfolioPositions, getHoldingsByStrategy, getPortfolioCurrentValue } from "./trader";
+import { verifyConnection, getPortfolioPositions, getHoldingsByStrategy, getPortfolioCurrentValue, readOpenPerformanceSummary } from "./trader";
 import { DAILY_CHECK_TIMEZONE, runCheckForPortfolio } from "./run-check";
 import { auditDaily, auditHistory, auditReportHasFailures } from "./audit-trades";
 import { closeBrowser } from "./scraper";
@@ -514,7 +514,8 @@ export function startUiServer(): http.Server {
         const performance = await readMonthlyPerformance(validPortfolioId);
         const closedTrades = await readClosedTrades(validPortfolioId, 50);
         const byStrategy = await readPerformanceByStrategy(validPortfolioId);
-        sendJson(res, 200, { monthly: performance, closedTrades, byStrategy });
+        const open = await readOpenPerformanceSummary(validPortfolioId);
+        sendJson(res, 200, { monthly: performance, closedTrades, byStrategy, open });
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         sendJson(res, 500, { error: message });
