@@ -1192,6 +1192,64 @@ export async function backfillMissingBuyRecords(
   return backfilled;
 }
 
+export const UNASSIGNED_STRATEGY = "unassigned";
+
+async function loadSymbolStrategyOwnerIndex(
+  portfolioId?: number
+): Promise<Map<number, Map<string, string[]>>> {
+  const db = getClient();
+  const filter = portfolioId != null ? "WHERE portfolio_id = ?" : "";
+  const params = portfolioId != null ? [portfolioId] : [];
+  const res = await db.execute(
+    `SELECT portfolio_id, slug, symbol FROM portfolio_strategy_symbols ${filter}`,
+    params
+  );
+  const index = new Map<number, Map<string, string[]>>();
+  for (const row of res.rows as unknown as {
+    portfolio_id: number;
+    slug: string;
+    symbol: string;
+  }[]) {
+    const pid = Number(row.portfolio_id);
+    const sym = normalizeTickerSymbol(String(row.symbol ?? ""));
+    const slug = String(row.slug).trim().toLowerCase();
+    if (!sym || !slug) continue;
+    const bySymbol = index.get(pid) ?? new Map<string, string[]>();
+    const slugs = bySymbol.get(sym) ?? [];
+    if (!slugs.includes(slug)) slugs.push(slug);
+    slugs.sort();
+    bySymbol.set(sym, slugs);
+    index.set(pid, bySymbol);
+  }
+  return index;
+}
+
+export function resolveClosedTradeStrategy(
+  portfolioId: number,
+  symbol: string,
+  sellStrategySlug: string | undefined | null,
+  ownerIndex: Map<number, Map<string, string[]>>
+): string {
+  const sym = normalizeTickerSymbol(symbol);
+  const portfolioOwners = ownerIndex.get(portfolioId);
+  const portfolioHasSleeves = (portfolioOwners?.size ?? 0) > 0;
+
+  if (portfolioHasSleeves) {
+    const owners = portfolioOwners?.get(sym);
+    if (!owners || owners.length === 0) {
+      return UNASSIGNED_STRATEGY;
+    }
+    const sellSlug = sellStrategySlug?.trim().toLowerCase();
+    if (sellSlug && owners.includes(sellSlug)) {
+      return sellSlug;
+    }
+    return owners[0];
+  }
+
+  const sellSlug = sellStrategySlug?.trim().toLowerCase();
+  return sellSlug || UNASSIGNED_STRATEGY;
+}
+
 export interface MonthlyPerformance {
   month: string;
   realizedPnL: number;
@@ -1226,7 +1284,8 @@ type ExecutionFifoRow = {
 
 function buildClosedTradesFromExecutions(
   buyRows: ExecutionFifoRow[],
-  sellRows: ExecutionFifoRow[]
+  sellRows: ExecutionFifoRow[],
+  ownerIndex?: Map<number, Map<string, string[]>>
 ): ClosedTrade[] {
   type BuyLot = { shares: number; price: number };
   const lotsByKey = new Map<string, BuyLot[]>();
@@ -1267,7 +1326,14 @@ function buildClosedTradesFromExecutions(
       closedTrades.push({
         symbol: row.symbol,
         portfolioId: Number(row.portfolio_id),
-        strategy: row.strategy_slug?.trim() || "unknown",
+        strategy: ownerIndex
+          ? resolveClosedTradeStrategy(
+              Number(row.portfolio_id),
+              row.symbol,
+              row.strategy_slug,
+              ownerIndex
+            )
+          : row.strategy_slug?.trim().toLowerCase() || UNASSIGNED_STRATEGY,
         buyPrice: avgBuyPrice,
         sellPrice,
         shares: matchedShares,
@@ -1386,44 +1452,24 @@ export async function readPerformanceByStrategy(
     params
   );
 
-  type BuyLot = { shares: number; price: number };
-  const lotsByKey = new Map<string, BuyLot[]>();
-  for (const row of buysResult.rows as unknown as {
-    portfolio_id: number; strategy_slug: string; symbol: string; shares: number; price: number;
-  }[]) {
-    const key = `${row.portfolio_id}:${row.symbol}`;
-    const lots = lotsByKey.get(key) ?? [];
-    lots.push({ shares: Number(row.shares), price: Number(row.price) });
-    lotsByKey.set(key, lots);
-  }
+  const ownerIndex = await loadSymbolStrategyOwnerIndex(portfolioId);
+  const closedTrades = buildClosedTradesFromExecutions(
+    buysResult.rows as unknown as ExecutionFifoRow[],
+    sellsResult.rows as unknown as ExecutionFifoRow[],
+    ownerIndex
+  );
 
   type StrategyTrade = { pnl: number; costBasis: number; closedAt: number };
   const tradesByStrategy = new Map<string, StrategyTrade[]>();
 
-  for (const row of sellsResult.rows as unknown as {
-    portfolio_id: number; strategy_slug: string; symbol: string; shares: number; price: number; executed_at: number;
-  }[]) {
-    const key = `${row.portfolio_id}:${row.symbol}`;
-    const lots = lotsByKey.get(key) ?? [];
-    let remaining = Number(row.shares);
-    let costBasis = 0;
-    let matched = 0;
-    while (remaining > 0 && lots.length > 0) {
-      const lot = lots[0];
-      const take = Math.min(remaining, lot.shares);
-      costBasis += take * lot.price;
-      matched += take;
-      remaining -= take;
-      lot.shares -= take;
-      if (lot.shares <= 0) lots.shift();
-    }
-    if (matched > 0) {
-      const pnl = (Number(row.price) - costBasis / matched) * matched;
-      const slug = row.strategy_slug || "unknown";
-      const trades = tradesByStrategy.get(slug) ?? [];
-      trades.push({ pnl, costBasis, closedAt: Number(row.executed_at) });
-      tradesByStrategy.set(slug, trades);
-    }
+  for (const trade of closedTrades) {
+    const trades = tradesByStrategy.get(trade.strategy) ?? [];
+    trades.push({
+      pnl: trade.pnl,
+      costBasis: trade.buyPrice * trade.shares,
+      closedAt: trade.closedAt,
+    });
+    tradesByStrategy.set(trade.strategy, trades);
   }
 
   const results: StrategyPerformance[] = [];
@@ -1461,7 +1507,11 @@ export async function readPerformanceByStrategy(
     });
   }
 
-  return results.sort((a, b) => b.realizedPnL - a.realizedPnL);
+  return results.sort((a, b) => {
+    if (a.strategy === UNASSIGNED_STRATEGY && b.strategy !== UNASSIGNED_STRATEGY) return 1;
+    if (b.strategy === UNASSIGNED_STRATEGY && a.strategy !== UNASSIGNED_STRATEGY) return -1;
+    return b.realizedPnL - a.realizedPnL;
+  });
 }
 
 export async function readClosedTrades(
@@ -1484,9 +1534,11 @@ export async function readClosedTrades(
     portfolioId != null ? [portfolioId] : []
   );
 
+  const ownerIndex = await loadSymbolStrategyOwnerIndex(portfolioId);
   const closedTrades = buildClosedTradesFromExecutions(
     buysResult.rows as unknown as ExecutionFifoRow[],
-    sellsResult.rows as unknown as ExecutionFifoRow[]
+    sellsResult.rows as unknown as ExecutionFifoRow[],
+    ownerIndex
   );
 
   return closedTrades

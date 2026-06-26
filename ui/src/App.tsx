@@ -1159,6 +1159,11 @@ function formatCurrency(value: number): string {
   });
 }
 
+function formatStrategyName(strategy: string): string {
+  if (strategy === "unassigned" || strategy === "unknown") return "Unassigned";
+  return strategy;
+}
+
 type PerformanceChartPoint = {
   month: string;
   pnl: number;
@@ -1321,7 +1326,7 @@ function StrategyChart({ strategy }: { strategy: StrategyPerformance }) {
 
   return (
     <CumulativePerformanceChart
-      title={strategy.strategy}
+      title={formatStrategyName(strategy.strategy)}
       points={points}
       returnPercent={strategyMonthlyReturnPercent}
     />
@@ -1854,7 +1859,7 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
             <tbody>
               {byStrategy.map((s: StrategyPerformance) => (
                 <tr key={s.strategy}>
-                  <td className="perf-month">{s.strategy}</td>
+                  <td className="perf-month">{formatStrategyName(s.strategy)}</td>
                   <td className={s.realizedPnL >= 0 ? "perf-positive" : "perf-negative"}>
                     {s.realizedPnL >= 0 ? "+" : ""}${formatCurrency(s.realizedPnL)}
                   </td>
@@ -1893,7 +1898,7 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
               {closedTrades.map((t, i) => (
                 <tr key={`${t.symbol}-${t.closedAt}-${i}`}>
                   <td className="perf-month">{t.symbol}</td>
-                  <td className="perf-month">{t.strategy}</td>
+                  <td className="perf-month">{formatStrategyName(t.strategy)}</td>
                   <td>{t.shares}</td>
                   <td>${formatCurrency(t.buyPrice)}</td>
                   <td>${formatCurrency(t.sellPrice)}</td>
