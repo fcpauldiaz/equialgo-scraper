@@ -357,6 +357,14 @@ export async function fetchPortfolioPositions(
   return r.json();
 }
 
+export async function fetchQuote(symbol: string): Promise<number | null> {
+  const r = await fetch(`/api/quote/${encodeURIComponent(symbol.trim().toUpperCase())}`);
+  if (!r.ok) return null;
+  const data = (await r.json().catch(() => ({}))) as { quotes?: Record<string, number | null> };
+  const sym = symbol.trim().toUpperCase();
+  return data.quotes?.[sym] ?? null;
+}
+
 export interface TradeOrderResult {
   symbol: string;
   action: "BUY" | "SELL";

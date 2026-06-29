@@ -32,6 +32,7 @@ import {
   type HoldingsByStrategyReport,
   placeBuyOrder,
   placeSellOrder,
+  fetchQuote,
   type TradeOrderResult,
 } from "./api";
 
@@ -578,7 +579,7 @@ function PortfolioRow({
       : null;
 
   return (
-    <li className="portfolio-row">
+    <li className="portfolio-row" onClick={() => { window.location.hash = `/portfolios/${portfolio.id}`; }} role="link">
       <div className="portfolio-row-header">
         <div className="portfolio-row-main">
           <span className="portfolio-name">{portfolio.name}</span>
@@ -1028,9 +1029,27 @@ function TradeForm({
   const [shares, setShares] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<TradeOrderResult | null>(null);
+  const [quote, setQuote] = useState<number | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const estimatedValue = quote && shares ? quote * parseInt(shares, 10) : null;
+
+  const handleGetQuote = async (e: React.FormEvent) => {
     e.preventDefault();
+    const sym = symbol.trim().toUpperCase();
+    const qty = parseInt(shares, 10);
+    if (!sym || !qty || qty <= 0) return;
+    setQuoteLoading(true);
+    setResult(null);
+    setQuote(null);
+    const price = await fetchQuote(sym);
+    setQuote(price);
+    setQuoteLoading(false);
+    setConfirming(true);
+  };
+
+  const handleConfirm = async () => {
     const sym = symbol.trim().toUpperCase();
     const qty = parseInt(shares, 10);
     if (!sym || !qty || qty <= 0) return;
@@ -1044,6 +1063,8 @@ function TradeForm({
       if (res.success) {
         setSymbol("");
         setShares("");
+        setConfirming(false);
+        setQuote(null);
         onTradeComplete();
       }
     } catch (err) {
@@ -1053,46 +1074,78 @@ function TradeForm({
     }
   };
 
+  const handleCancel = () => {
+    setConfirming(false);
+    setQuote(null);
+    setResult(null);
+  };
+
   const handleSellFromPosition = (pos: PortfolioPosition) => {
     setAction("SELL");
     setSymbol(pos.symbol);
     setShares(String(pos.longQuantity));
+    setConfirming(false);
+    setQuote(null);
+    setResult(null);
   };
 
   return (
     <div className="trade-form-section">
       <h2>Trade</h2>
-      <form className="trade-form" onSubmit={handleSubmit}>
+      <form className="trade-form" onSubmit={handleGetQuote}>
         <div className="trade-form-row">
-          <select value={action} onChange={(e) => setAction(e.target.value as "BUY" | "SELL")} disabled={loading}>
+          <select value={action} onChange={(e) => { setAction(e.target.value as "BUY" | "SELL"); setConfirming(false); setQuote(null); }} disabled={loading}>
             <option value="BUY">Buy</option>
             <option value="SELL">Sell</option>
           </select>
           <input
             type="text"
             value={symbol}
-            onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+            onChange={(e) => { setSymbol(e.target.value.toUpperCase()); setConfirming(false); setQuote(null); }}
             placeholder="Symbol"
-            disabled={loading}
+            disabled={loading || confirming}
             className="trade-symbol-input"
           />
           <input
             type="number"
             value={shares}
-            onChange={(e) => setShares(e.target.value)}
+            onChange={(e) => { setShares(e.target.value); setConfirming(false); setQuote(null); }}
             placeholder="Shares"
             min="1"
             step="1"
-            disabled={loading}
+            disabled={loading || confirming}
             className="trade-shares-input"
           />
-          <button type="submit" disabled={loading || !symbol.trim() || !shares || parseInt(shares) <= 0}
-            className={`trade-submit-btn trade-submit-${action.toLowerCase()}`}
-          >
-            {loading ? "Placing…" : `${action === "BUY" ? "Buy" : "Sell"} ${symbol.trim() || "…"}`}
-          </button>
+          {!confirming && (
+            <button type="submit" disabled={quoteLoading || !symbol.trim() || !shares || parseInt(shares) <= 0}
+              className="trade-submit-btn trade-submit-quote"
+            >
+              {quoteLoading ? "Getting price…" : "Get quote"}
+            </button>
+          )}
         </div>
       </form>
+      {confirming && (
+        <div className="trade-confirm">
+          <p className="trade-confirm-quote">
+            {symbol} @ <strong>${quote != null ? quote.toFixed(2) : "unavailable"}</strong>
+            {estimatedValue != null && <span className="trade-confirm-est"> · est. ${estimatedValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>}
+          </p>
+          <div className="trade-confirm-actions">
+            <button
+              type="button"
+              onClick={handleConfirm}
+              disabled={loading}
+              className={`trade-submit-btn trade-submit-${action.toLowerCase()}`}
+            >
+              {loading ? "Placing…" : `Confirm ${action === "BUY" ? "buy" : "sell"} ${shares} ${symbol}`}
+            </button>
+            <button type="button" onClick={handleCancel} disabled={loading} className="trade-cancel-btn">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       {result && (
         <p className={result.success ? "trade-result-success" : "trade-result-error"}>
           {result.success
@@ -1100,7 +1153,7 @@ function TradeForm({
             : result.error}
         </p>
       )}
-      {action === "SELL" && positions.length > 0 && (
+      {action === "SELL" && positions.length > 0 && !confirming && (
         <div className="trade-quick-sell">
           <span className="trade-quick-sell-label">Close position:</span>
           {positions.map((pos) => (

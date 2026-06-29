@@ -23,6 +23,7 @@ import {
   getTradierAccountId,
   isTradierAccountInProfileList,
   listTradierAccountsForKey,
+  getTradierQuotePrices,
 } from "./tradier-client";
 import { verifyConnection, getPortfolioPositions, getHoldingsByStrategy, getPortfolioCurrentValue, readOpenPerformanceSummary, placeManualBuyOrder, placeManualSellOrder } from "./trader";
 import { DAILY_CHECK_TIMEZONE, runCheckForPortfolio } from "./run-check";
@@ -706,6 +707,38 @@ export function startUiServer(): http.Server {
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         sendJson(res, 503, { error: message });
+      }
+      return;
+    }
+
+    const quoteMatch = pathname.match(/^\/api\/quote\/(.+)$/);
+    if (quoteMatch && method === "GET") {
+      const symbols = decodeURIComponent(quoteMatch[1]).split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+      if (symbols.length === 0) {
+        sendJson(res, 400, { error: "symbol required" });
+        return;
+      }
+      try {
+        const portfolios = await listPortfolios();
+        const tradierPortfolio = portfolios.find((p) => p.brokerage === "tradier");
+        if (!tradierPortfolio) {
+          sendJson(res, 503, { error: "No Tradier-connected portfolio for quotes" });
+          return;
+        }
+        const creds = await readTradierCredentials(tradierPortfolio.id);
+        if (!creds) {
+          sendJson(res, 503, { error: "Tradier credentials unavailable" });
+          return;
+        }
+        const prices = await getTradierQuotePrices(creds.apiKey, creds.sandbox, symbols);
+        const quotes: Record<string, number | null> = {};
+        for (const sym of symbols) {
+          quotes[sym] = prices.get(sym) ?? null;
+        }
+        sendJson(res, 200, { quotes });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        sendJson(res, 500, { error: message });
       }
       return;
     }
