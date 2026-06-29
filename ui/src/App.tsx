@@ -30,6 +30,9 @@ import {
   type AuditDiscrepancy,
   type PortfolioPosition,
   type HoldingsByStrategyReport,
+  placeBuyOrder,
+  placeSellOrder,
+  type TradeOrderResult,
 } from "./api";
 
 const PORTFOLIOS_QUERY_KEY = ["portfolios"] as const;
@@ -1011,6 +1014,111 @@ function HoldingsByStrategySection({ report }: { report: HoldingsByStrategyRepor
   );
 }
 
+function TradeForm({
+  portfolioId,
+  positions,
+  onTradeComplete,
+}: {
+  portfolioId: number;
+  positions: PortfolioPosition[];
+  onTradeComplete: () => void;
+}) {
+  const [action, setAction] = useState<"BUY" | "SELL">("BUY");
+  const [symbol, setSymbol] = useState("");
+  const [shares, setShares] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<TradeOrderResult | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const sym = symbol.trim().toUpperCase();
+    const qty = parseInt(shares, 10);
+    if (!sym || !qty || qty <= 0) return;
+    setLoading(true);
+    setResult(null);
+    try {
+      const res = action === "BUY"
+        ? await placeBuyOrder(portfolioId, sym, qty)
+        : await placeSellOrder(portfolioId, sym, qty);
+      setResult(res);
+      if (res.success) {
+        setSymbol("");
+        setShares("");
+        onTradeComplete();
+      }
+    } catch (err) {
+      setResult({ symbol: sym, action, shares: qty, price: 0, success: false, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSellFromPosition = (pos: PortfolioPosition) => {
+    setAction("SELL");
+    setSymbol(pos.symbol);
+    setShares(String(pos.longQuantity));
+  };
+
+  return (
+    <div className="trade-form-section">
+      <h2>Trade</h2>
+      <form className="trade-form" onSubmit={handleSubmit}>
+        <div className="trade-form-row">
+          <select value={action} onChange={(e) => setAction(e.target.value as "BUY" | "SELL")} disabled={loading}>
+            <option value="BUY">Buy</option>
+            <option value="SELL">Sell</option>
+          </select>
+          <input
+            type="text"
+            value={symbol}
+            onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+            placeholder="Symbol"
+            disabled={loading}
+            className="trade-symbol-input"
+          />
+          <input
+            type="number"
+            value={shares}
+            onChange={(e) => setShares(e.target.value)}
+            placeholder="Shares"
+            min="1"
+            step="1"
+            disabled={loading}
+            className="trade-shares-input"
+          />
+          <button type="submit" disabled={loading || !symbol.trim() || !shares || parseInt(shares) <= 0}
+            className={`trade-submit-btn trade-submit-${action.toLowerCase()}`}
+          >
+            {loading ? "Placing…" : `${action === "BUY" ? "Buy" : "Sell"} ${symbol.trim() || "…"}`}
+          </button>
+        </div>
+      </form>
+      {result && (
+        <p className={result.success ? "trade-result-success" : "trade-result-error"}>
+          {result.success
+            ? `${result.action} ${result.shares} ${result.symbol} @ $${result.price.toFixed(2)}${result.orderId ? ` (order ${result.orderId})` : ""}`
+            : result.error}
+        </p>
+      )}
+      {action === "SELL" && positions.length > 0 && (
+        <div className="trade-quick-sell">
+          <span className="trade-quick-sell-label">Close position:</span>
+          {positions.map((pos) => (
+            <button
+              key={pos.symbol}
+              type="button"
+              className="trade-quick-sell-btn"
+              onClick={() => handleSellFromPosition(pos)}
+            >
+              {pos.symbol} ({pos.longQuantity})
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PortfolioDetailView({
   portfolioId,
   portfolios,
@@ -1024,6 +1132,7 @@ function PortfolioDetailView({
   portfolioUrlEnvOverride: boolean;
   canWrite: boolean;
 }) {
+  const queryClient = useQueryClient();
   const portfolio = portfolios.find((p) => p.id === portfolioId);
   const { data: positions, isLoading, error } = usePortfolioPositions(portfolioId);
   const {
@@ -1134,6 +1243,13 @@ function PortfolioDetailView({
       )}
       {!portfolio?.hasCredentials && (
         <p className="error-msg">Not connected. Link this portfolio via Portfolios (Schwab or Tradier).</p>
+      )}
+      {canWrite && portfolio?.hasCredentials && positions && (
+        <TradeForm
+          portfolioId={portfolioId}
+          positions={positions}
+          onTradeComplete={() => queryClient.invalidateQueries({ queryKey: positionsQueryKey(portfolioId) })}
+        />
       )}
       {portfolio?.hasCredentials && (
         <>
