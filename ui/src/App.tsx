@@ -296,6 +296,10 @@ function Nav({
 }) {
   return (
     <nav className="app-nav">
+      <a href="#/dashboard" className="app-nav-brand">
+        <img src="/favicon.svg" alt="" width={20} height={20} />
+        <span>EquiAlgo</span>
+      </a>
       <a href="#/dashboard" className={route.view === "dashboard" ? "active" : ""}>
         Dashboard
       </a>
