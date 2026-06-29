@@ -187,6 +187,16 @@ interface Position {
   marketValue?: number;
 }
 
+const OCC_OPTION_PATTERN = /^[A-Z]{1,6}\d{6}[CP]\d{8}$/;
+
+function isOptionSymbol(symbol: string): boolean {
+  return OCC_OPTION_PATTERN.test(symbol.trim().toUpperCase());
+}
+
+function optionMultiplier(symbol: string): number {
+  return isOptionSymbol(symbol) ? 100 : 1;
+}
+
 function deriveCurrentPrice(
   marketValue: number | undefined,
   quantity: number,
@@ -721,9 +731,10 @@ async function getCurrentPositions(
     );
     const positionsMap = new Map<string, Position>();
     for (const p of positions) {
+      const multiplier = optionMultiplier(p.symbol);
       const avgEntryPrice =
         p.costBasis != null && p.longQuantity > 0
-          ? p.costBasis / p.longQuantity
+          ? p.costBasis / (p.longQuantity * multiplier)
           : undefined;
       const currentPrice = deriveCurrentPrice(
         undefined,
@@ -731,7 +742,7 @@ async function getCurrentPositions(
         quotes.get(p.symbol)
       );
       const marketValue =
-        currentPrice != null ? currentPrice * p.longQuantity : undefined;
+        currentPrice != null ? currentPrice * p.longQuantity * multiplier : undefined;
       positionsMap.set(p.symbol, {
         symbol: p.symbol,
         longQuantity: p.longQuantity,
@@ -740,7 +751,7 @@ async function getCurrentPositions(
         currentPrice,
         marketValue,
         longOpenProfitLoss: deriveOpenProfitLoss(
-          p.longQuantity,
+          p.longQuantity * multiplier,
           avgEntryPrice,
           currentPrice,
           undefined
