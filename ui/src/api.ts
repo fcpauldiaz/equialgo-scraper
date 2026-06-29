@@ -357,6 +357,46 @@ export async function fetchPortfolioPositions(
   return r.json();
 }
 
+export interface TradeOrderResult {
+  symbol: string;
+  action: "BUY" | "SELL";
+  shares: number;
+  price: number;
+  success: boolean;
+  error?: string;
+  orderId?: string;
+}
+
+export async function placeBuyOrder(
+  portfolioId: number,
+  symbol: string,
+  shares: number
+): Promise<TradeOrderResult> {
+  const r = await fetch(`/api/portfolios/${portfolioId}/buy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ symbol, shares }),
+  });
+  const data = await r.json().catch(() => ({})) as TradeOrderResult & { error?: string };
+  if (!r.ok && !data.symbol) throw new Error(data.error || r.statusText);
+  return data as TradeOrderResult;
+}
+
+export async function placeSellOrder(
+  portfolioId: number,
+  symbol: string,
+  shares: number
+): Promise<TradeOrderResult> {
+  const r = await fetch(`/api/portfolios/${portfolioId}/sell`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ symbol, shares }),
+  });
+  const data = await r.json().catch(() => ({})) as TradeOrderResult & { error?: string };
+  if (!r.ok && !data.symbol) throw new Error(data.error || r.statusText);
+  return data as TradeOrderResult;
+}
+
 export interface StrategyHoldingsGroup {
   strategy: string;
   holdings: PortfolioPosition[];

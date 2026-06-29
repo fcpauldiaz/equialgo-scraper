@@ -14,6 +14,8 @@ import {
   readClosedTrades,
   readPerformanceByStrategy,
   parseAndNormalizeSystemTraderSlug,
+  persistTradeExecutions,
+  type TradeExecutionRecord,
 } from "./state";
 import { startSchwabLoginFlow, handleSchwabCallback, isSchwabCallbackPathname, schwabCallbackPathnames } from "./schwab-oauth";
 import { renderSchwabOAuthPage } from "./schwab-oauth-page";
@@ -22,7 +24,7 @@ import {
   isTradierAccountInProfileList,
   listTradierAccountsForKey,
 } from "./tradier-client";
-import { verifyConnection, getPortfolioPositions, getHoldingsByStrategy, getPortfolioCurrentValue, readOpenPerformanceSummary } from "./trader";
+import { verifyConnection, getPortfolioPositions, getHoldingsByStrategy, getPortfolioCurrentValue, readOpenPerformanceSummary, placeManualBuyOrder, placeManualSellOrder } from "./trader";
 import { DAILY_CHECK_TIMEZONE, runCheckForPortfolio } from "./run-check";
 import { auditDaily, auditHistory, auditReportHasFailures } from "./audit-trades";
 import { closeBrowser } from "./scraper";
@@ -111,6 +113,23 @@ function requireAuth(req: http.IncomingMessage, res: http.ServerResponse): boole
   if (isAuthenticated(req)) return true;
   sendJson(res, 401, { error: "Authentication required" });
   return false;
+}
+
+function requireSameOrigin(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+  const origin = req.headers.origin;
+  const referer = req.headers.referer;
+  if (!origin && !referer) {
+    sendJson(res, 403, { error: "Forbidden: missing origin" });
+    return false;
+  }
+  const host = req.headers.host ?? `localhost:${UI_PORT}`;
+  const allowed = [`http://${host}`, `https://${host}`];
+  const source = origin || (referer ? new URL(referer).origin : "");
+  if (!allowed.includes(source)) {
+    sendJson(res, 403, { error: "Forbidden: invalid origin" });
+    return false;
+  }
+  return true;
 }
 
 function serveStatic(
@@ -687,6 +706,74 @@ export function startUiServer(): http.Server {
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         sendJson(res, 503, { error: message });
+      }
+      return;
+    }
+
+    const buyMatch = pathname.match(/^\/api\/portfolios\/(\d+)\/buy$/);
+    if (buyMatch && method === "POST") {
+      if (!requireSameOrigin(req, res)) return;
+      if (!requireAuth(req, res)) return;
+      const portfolioId = parseInt(buyMatch[1], 10);
+      if (portfolioId <= 0) {
+        sendJson(res, 400, { error: "Invalid portfolio id" });
+        return;
+      }
+      try {
+        const body = await parseBody(req);
+        const symbol = typeof body.symbol === "string" ? body.symbol.trim().toUpperCase() : "";
+        const shares = typeof body.shares === "number" ? Math.floor(body.shares) : 0;
+        if (!symbol) { sendJson(res, 400, { error: "symbol is required" }); return; }
+        if (shares <= 0) { sendJson(res, 400, { error: "shares must be a positive integer" }); return; }
+        const result = await placeManualBuyOrder(portfolioId, symbol, shares);
+        if (result.success) {
+          const record: TradeExecutionRecord = {
+            portfolioId, strategySlug: "manual", symbol: result.symbol,
+            action: "BUY", shares: result.shares, price: result.price,
+            success: true, orderId: result.orderId,
+          };
+          await persistTradeExecutions([record]).catch((e) =>
+            console.error("[manual buy] persist failed:", e instanceof Error ? e.message : e)
+          );
+        }
+        sendJson(res, result.success ? 200 : 400, result);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        sendJson(res, 500, { error: message });
+      }
+      return;
+    }
+
+    const sellMatch = pathname.match(/^\/api\/portfolios\/(\d+)\/sell$/);
+    if (sellMatch && method === "POST") {
+      if (!requireSameOrigin(req, res)) return;
+      if (!requireAuth(req, res)) return;
+      const portfolioId = parseInt(sellMatch[1], 10);
+      if (portfolioId <= 0) {
+        sendJson(res, 400, { error: "Invalid portfolio id" });
+        return;
+      }
+      try {
+        const body = await parseBody(req);
+        const symbol = typeof body.symbol === "string" ? body.symbol.trim().toUpperCase() : "";
+        const shares = typeof body.shares === "number" ? Math.floor(body.shares) : 0;
+        if (!symbol) { sendJson(res, 400, { error: "symbol is required" }); return; }
+        if (shares <= 0) { sendJson(res, 400, { error: "shares must be a positive integer" }); return; }
+        const result = await placeManualSellOrder(portfolioId, symbol, shares);
+        if (result.success) {
+          const record: TradeExecutionRecord = {
+            portfolioId, strategySlug: "manual", symbol: result.symbol,
+            action: "SELL", shares: result.shares, price: result.price,
+            success: true, orderId: result.orderId,
+          };
+          await persistTradeExecutions([record]).catch((e) =>
+            console.error("[manual sell] persist failed:", e instanceof Error ? e.message : e)
+          );
+        }
+        sendJson(res, result.success ? 200 : 400, result);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        sendJson(res, 500, { error: message });
       }
       return;
     }

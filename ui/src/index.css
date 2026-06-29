@@ -823,6 +823,113 @@ input:focus, select:focus {
   font-size: var(--text-base);
 }
 
+/* Trade Form */
+
+.trade-form-section {
+  margin-bottom: var(--space-32);
+  padding: var(--space-16);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.trade-form-section h2 {
+  margin: 0 0 var(--space-12);
+  font-size: var(--text-lg);
+}
+
+.trade-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  align-items: center;
+}
+
+.trade-form-row select {
+  width: 5rem;
+}
+
+.trade-symbol-input {
+  width: 6rem;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+}
+
+.trade-shares-input {
+  width: 5rem;
+  font-family: var(--font-mono);
+}
+
+.trade-submit-btn {
+  font-weight: 600;
+  padding: var(--space-8) var(--space-16);
+}
+
+.trade-submit-buy {
+  background: var(--color-positive);
+  border-color: var(--color-positive);
+  color: oklch(15% 0.01 155);
+}
+
+.trade-submit-buy:hover {
+  background: oklch(65% 0.13 155);
+  border-color: oklch(65% 0.13 155);
+}
+
+.trade-submit-sell {
+  background: var(--color-negative);
+  border-color: var(--color-negative);
+  color: oklch(98% 0.01 25);
+}
+
+.trade-submit-sell:hover {
+  background: oklch(55% 0.16 25);
+  border-color: oklch(55% 0.16 25);
+}
+
+.trade-result-success {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-positive);
+  margin-top: var(--space-8);
+}
+
+.trade-result-error {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-negative);
+  margin-top: var(--space-8);
+}
+
+.trade-quick-sell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4) var(--space-8);
+  margin-top: var(--space-12);
+}
+
+.trade-quick-sell-label {
+  font-size: var(--text-xs);
+  color: var(--color-faint);
+}
+
+.trade-quick-sell-btn {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 2px var(--space-8);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-rule);
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+
+.trade-quick-sell-btn:hover {
+  border-color: var(--color-negative);
+  color: var(--color-negative);
+}
+
 /* Auth */
 
 .nav-auth { margin-left: auto; }

@@ -972,6 +972,44 @@ export async function getPortfolioPositions(
   }));
 }
 
+export async function placeManualBuyOrder(
+  portfolioId: number,
+  symbol: string,
+  shares: number
+): Promise<TradeExecutionResult> {
+  const sym = normalizeTickerSymbol(symbol);
+  if (!sym) {
+    return { symbol, action: "BUY", shares, price: 0, success: false, error: "Invalid symbol" };
+  }
+  if (shares <= 0 || !Number.isInteger(shares)) {
+    return { symbol: sym, action: "BUY", shares, price: 0, success: false, error: "Shares must be a positive integer" };
+  }
+  return placeBuyOrder(portfolioId, sym, shares, 0);
+}
+
+export async function placeManualSellOrder(
+  portfolioId: number,
+  symbol: string,
+  shares: number
+): Promise<TradeExecutionResult> {
+  const sym = normalizeTickerSymbol(symbol);
+  if (!sym) {
+    return { symbol, action: "SELL", shares, price: 0, success: false, error: "Invalid symbol" };
+  }
+  if (shares <= 0 || !Number.isInteger(shares)) {
+    return { symbol: sym, action: "SELL", shares, price: 0, success: false, error: "Shares must be a positive integer" };
+  }
+  const positions = await getCurrentPositions(portfolioId);
+  const pos = positions.get(sym);
+  if (!pos || pos.longQuantity <= 0) {
+    return { symbol: sym, action: "SELL", shares, price: 0, success: false, error: `No position in ${sym}` };
+  }
+  if (shares > pos.longQuantity) {
+    return { symbol: sym, action: "SELL", shares, price: 0, success: false, error: `Only holding ${pos.longQuantity} shares of ${sym}` };
+  }
+  return placeSellOrder(portfolioId, sym, shares, 0);
+}
+
 export async function getPortfolioCurrentValue(
   portfolioId: number
 ): Promise<number | null> {
