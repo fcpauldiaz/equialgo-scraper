@@ -115,6 +115,23 @@ function requireAuth(req: http.IncomingMessage, res: http.ServerResponse): boole
   return false;
 }
 
+function requireSameOrigin(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+  const origin = req.headers.origin;
+  const referer = req.headers.referer;
+  if (!origin && !referer) {
+    sendJson(res, 403, { error: "Forbidden: missing origin" });
+    return false;
+  }
+  const host = req.headers.host ?? `localhost:${UI_PORT}`;
+  const allowed = [`http://${host}`, `https://${host}`];
+  const source = origin || (referer ? new URL(referer).origin : "");
+  if (!allowed.includes(source)) {
+    sendJson(res, 403, { error: "Forbidden: invalid origin" });
+    return false;
+  }
+  return true;
+}
+
 function serveStatic(
   res: http.ServerResponse,
   filePath: string,
@@ -695,6 +712,7 @@ export function startUiServer(): http.Server {
 
     const buyMatch = pathname.match(/^\/api\/portfolios\/(\d+)\/buy$/);
     if (buyMatch && method === "POST") {
+      if (!requireSameOrigin(req, res)) return;
       if (!requireAuth(req, res)) return;
       const portfolioId = parseInt(buyMatch[1], 10);
       if (portfolioId <= 0) {
@@ -728,6 +746,7 @@ export function startUiServer(): http.Server {
 
     const sellMatch = pathname.match(/^\/api\/portfolios\/(\d+)\/sell$/);
     if (sellMatch && method === "POST") {
+      if (!requireSameOrigin(req, res)) return;
       if (!requireAuth(req, res)) return;
       const portfolioId = parseInt(sellMatch[1], 10);
       if (portfolioId <= 0) {
