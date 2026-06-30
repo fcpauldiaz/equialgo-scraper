@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useMemo } from "react";
 import {
   fetchPortfolios,
   createPortfolio,
@@ -23,6 +23,7 @@ import {
   runTradeAudit,
   SYSTEMTRADER_STRATEGY_SLUGS,
   type PortfolioItem,
+  type ClosedTrade,
   type MonthlyPerformance,
   type StrategyPerformance,
   type TradierAccountChoice,
@@ -261,6 +262,12 @@ function daysAgoIso(days: number): string {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() - days);
   return d.toISOString().slice(0, 10);
+}
+
+function closedTradeDateIso(closedAt: number): string {
+  return new Date(closedAt).toLocaleDateString("en-CA", {
+    timeZone: "America/New_York",
+  });
 }
 
 function getRoute(): Route {
@@ -1904,6 +1911,209 @@ function buildStrategyPerformanceRows(
     });
 }
 
+function ClosedTradesSection({
+  trades,
+  portfolios,
+  showPortfolioColumn,
+}: {
+  trades: ClosedTrade[];
+  portfolios: PortfolioItem[];
+  showPortfolioColumn: boolean;
+}) {
+  const [strategyFilter, setStrategyFilter] = useState("");
+  const [symbolFilter, setSymbolFilter] = useState("");
+  const [outcomeFilter, setOutcomeFilter] = useState<"all" | "win" | "loss">("all");
+  const [portfolioFilter, setPortfolioFilter] = useState<number | "">("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+
+  const portfolioNameById = useMemo(
+    () => new Map(portfolios.map((p) => [p.id, p.name])),
+    [portfolios]
+  );
+
+  const strategyOptions = useMemo(
+    () => [...new Set(trades.map((t) => t.strategy))].sort(),
+    [trades]
+  );
+
+  const portfolioOptions = useMemo(() => {
+    const ids = [...new Set(trades.map((t) => t.portfolioId))].sort((a, b) => a - b);
+    return ids.map((id) => ({
+      id,
+      name: portfolioNameById.get(id) ?? `Portfolio ${id}`,
+    }));
+  }, [trades, portfolioNameById]);
+
+  const filteredTrades = useMemo(() => {
+    const symbolQuery = symbolFilter.trim().toLowerCase();
+    return trades.filter((t) => {
+      if (strategyFilter && t.strategy !== strategyFilter) return false;
+      if (symbolQuery && !t.symbol.toLowerCase().includes(symbolQuery)) return false;
+      if (outcomeFilter === "win" && t.pnl < 0) return false;
+      if (outcomeFilter === "loss" && t.pnl >= 0) return false;
+      const tradeDate = closedTradeDateIso(t.closedAt);
+      if (fromDate && tradeDate < fromDate) return false;
+      if (toDate && tradeDate > toDate) return false;
+      if (showPortfolioColumn && portfolioFilter !== "" && t.portfolioId !== portfolioFilter) {
+        return false;
+      }
+      return true;
+    });
+  }, [trades, strategyFilter, symbolFilter, outcomeFilter, fromDate, toDate, portfolioFilter, showPortfolioColumn]);
+
+  const hasActiveFilters =
+    strategyFilter !== "" ||
+    symbolFilter.trim() !== "" ||
+    outcomeFilter !== "all" ||
+    fromDate !== "" ||
+    toDate !== "" ||
+    portfolioFilter !== "";
+
+  const clearFilters = () => {
+    setStrategyFilter("");
+    setSymbolFilter("");
+    setOutcomeFilter("all");
+    setFromDate("");
+    setToDate("");
+    setPortfolioFilter("");
+  };
+
+  return (
+    <>
+      <h2>Recent Closed Trades</h2>
+      <div className="perf-filters">
+        <label>
+          Strategy{" "}
+          <select
+            value={strategyFilter}
+            onChange={(e) => setStrategyFilter(e.target.value)}
+          >
+            <option value="">All</option>
+            {strategyOptions.map((strategy) => (
+              <option key={strategy} value={strategy}>
+                {formatStrategyName(strategy)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Symbol{" "}
+          <input
+            type="search"
+            value={symbolFilter}
+            onChange={(e) => setSymbolFilter(e.target.value)}
+            placeholder="e.g. STX"
+          />
+        </label>
+        <label>
+          Outcome{" "}
+          <select
+            value={outcomeFilter}
+            onChange={(e) =>
+              setOutcomeFilter(e.target.value as "all" | "win" | "loss")
+            }
+          >
+            <option value="all">All</option>
+            <option value="win">Winners</option>
+            <option value="loss">Losers</option>
+          </select>
+        </label>
+        <label>
+          From{" "}
+          <input
+            type="date"
+            value={fromDate}
+            onChange={(e) => setFromDate(e.target.value)}
+          />
+        </label>
+        <label>
+          To{" "}
+          <input
+            type="date"
+            value={toDate}
+            onChange={(e) => setToDate(e.target.value)}
+          />
+        </label>
+        {showPortfolioColumn && (
+          <label>
+            Portfolio{" "}
+            <select
+              value={portfolioFilter}
+              onChange={(e) =>
+                setPortfolioFilter(
+                  e.target.value ? parseInt(e.target.value, 10) : ""
+                )
+              }
+            >
+              <option value="">All</option>
+              {portfolioOptions.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {hasActiveFilters && (
+          <button type="button" className="perf-filter-clear" onClick={clearFilters}>
+            Clear filters
+          </button>
+        )}
+      </div>
+      <p className="perf-filter-count">
+        Showing {filteredTrades.length} of {trades.length} trades
+      </p>
+      {filteredTrades.length === 0 ? (
+        <p className="perf-empty">No closed trades match the current filters.</p>
+      ) : (
+        <table className="perf-table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              {showPortfolioColumn && <th>Portfolio</th>}
+              <th>Strategy</th>
+              <th>Shares</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>P&L</th>
+              <th>Return</th>
+              <th>Date</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredTrades.map((t, i) => (
+              <tr key={`${t.symbol}-${t.closedAt}-${i}`}>
+                <td className="perf-month">{t.symbol}</td>
+                {showPortfolioColumn && (
+                  <td className="perf-month">
+                    {portfolioNameById.get(t.portfolioId) ?? t.portfolioId}
+                  </td>
+                )}
+                <td className="perf-month">{formatStrategyName(t.strategy)}</td>
+                <td>{t.shares}</td>
+                <td>${formatCurrency(t.buyPrice)}</td>
+                <td>${formatCurrency(t.sellPrice)}</td>
+                <td className={t.pnl >= 0 ? "perf-positive" : "perf-negative"}>
+                  {t.pnl >= 0 ? "+" : ""}${formatCurrency(t.pnl)}
+                </td>
+                <td className={t.pnlPercent >= 0 ? "perf-positive" : "perf-negative"}>
+                  {t.pnlPercent >= 0 ? "+" : ""}{t.pnlPercent}%
+                </td>
+                <td>
+                  {new Date(t.closedAt).toLocaleDateString("en-US", {
+                    timeZone: "America/New_York",
+                  })}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </>
+  );
+}
+
 function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | undefined>(undefined);
 
@@ -2159,41 +2369,12 @@ function PerformanceView({ portfolios }: { portfolios: PortfolioItem[] }) {
       )}
 
       {closedTrades.length > 0 && (
-        <>
-          <h2>Recent Closed Trades</h2>
-          <table className="perf-table">
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Strategy</th>
-                <th>Shares</th>
-                <th>Entry</th>
-                <th>Exit</th>
-                <th>P&L</th>
-                <th>Return</th>
-                <th>Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              {closedTrades.map((t, i) => (
-                <tr key={`${t.symbol}-${t.closedAt}-${i}`}>
-                  <td className="perf-month">{t.symbol}</td>
-                  <td className="perf-month">{formatStrategyName(t.strategy)}</td>
-                  <td>{t.shares}</td>
-                  <td>${formatCurrency(t.buyPrice)}</td>
-                  <td>${formatCurrency(t.sellPrice)}</td>
-                  <td className={t.pnl >= 0 ? "perf-positive" : "perf-negative"}>
-                    {t.pnl >= 0 ? "+" : ""}${formatCurrency(t.pnl)}
-                  </td>
-                  <td className={t.pnlPercent >= 0 ? "perf-positive" : "perf-negative"}>
-                    {t.pnlPercent >= 0 ? "+" : ""}{t.pnlPercent}%
-                  </td>
-                  <td>{new Date(t.closedAt).toLocaleDateString("en-US", { timeZone: "America/New_York" })}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
+        <ClosedTradesSection
+          key={selectedPortfolioId ?? "all"}
+          trades={closedTrades}
+          portfolios={portfolios}
+          showPortfolioColumn={selectedPortfolioId == null}
+        />
       )}
     </>
   );

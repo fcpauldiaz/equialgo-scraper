@@ -537,12 +537,57 @@ input:focus, select:focus {
 
 .perf-filter { margin-bottom: var(--space-24); }
 
-.perf-filter label {
+.perf-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-12) var(--space-16);
+  margin-bottom: var(--space-12);
+}
+
+.perf-filter label,
+.perf-filters label {
   font-size: var(--text-sm);
   color: var(--color-muted);
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+.perf-filter label {
+  flex-direction: row;
   align-items: center;
-  gap: var(--space-8);
+}
+
+.perf-filter-count {
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+  margin: 0 0 var(--space-12);
+}
+
+.perf-filter-clear {
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--color-muted);
+  background: transparent;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-pill);
+  padding: var(--space-4) var(--space-12);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out-expo),
+              border-color var(--dur-fast) var(--ease-out-expo);
+}
+
+.perf-filter-clear:hover {
+  color: var(--color-ink);
+  border-color: var(--color-faint);
+}
+
+.perf-filters input[type="search"],
+.perf-filters input[type="date"] {
+  min-width: 6rem;
 }
 
 .perf-summary {
