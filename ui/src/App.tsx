@@ -1962,6 +1962,24 @@ function ClosedTradesSection({
     });
   }, [trades, strategyFilter, symbolFilter, outcomeFilter, fromDate, toDate, portfolioFilter, showPortfolioColumn]);
 
+  const filteredTotals = useMemo(() => {
+    let totalShares = 0;
+    let totalPnL = 0;
+    let totalCostBasis = 0;
+    for (const t of filteredTrades) {
+      totalShares += t.shares;
+      totalPnL += t.pnl;
+      totalCostBasis += t.buyPrice * t.shares;
+    }
+    const returnPercent =
+      totalCostBasis > 0 ? (totalPnL / totalCostBasis) * 100 : 0;
+    return {
+      totalShares,
+      totalPnL: Math.round(totalPnL * 100) / 100,
+      returnPercent: Math.round(returnPercent * 10) / 10,
+    };
+  }, [filteredTrades]);
+
   const hasActiveFilters =
     strategyFilter !== "" ||
     symbolFilter.trim() !== "" ||
@@ -2108,6 +2126,33 @@ function ClosedTradesSection({
               </tr>
             ))}
           </tbody>
+          <tfoot>
+            <tr className="perf-table-total">
+              <td colSpan={showPortfolioColumn ? 3 : 2} className="perf-month">
+                Total ({filteredTrades.length})
+              </td>
+              <td>{filteredTotals.totalShares}</td>
+              <td>—</td>
+              <td>—</td>
+              <td
+                className={
+                  filteredTotals.totalPnL >= 0 ? "perf-positive" : "perf-negative"
+                }
+              >
+                {filteredTotals.totalPnL >= 0 ? "+" : ""}$
+                {formatCurrency(filteredTotals.totalPnL)}
+              </td>
+              <td
+                className={
+                  filteredTotals.returnPercent >= 0 ? "perf-positive" : "perf-negative"
+                }
+              >
+                {filteredTotals.returnPercent >= 0 ? "+" : ""}
+                {filteredTotals.returnPercent}%
+              </td>
+              <td>—</td>
+            </tr>
+          </tfoot>
         </table>
       )}
     </>
