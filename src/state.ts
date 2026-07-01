@@ -542,9 +542,6 @@ export async function setPortfolioSystemTraderStrategies(
   portfolioId: number,
   slugs: string[]
 ): Promise<void> {
-  if (slugs.length === 0) {
-    throw new Error("At least one strategy slug is required");
-  }
   const db = getClient();
   const check = await db.execute("SELECT id FROM portfolios WHERE id = ?", [
     portfolioId,
@@ -558,6 +555,14 @@ export async function setPortfolioSystemTraderStrategies(
     if (!ALLOWED_SLUG_SET.has(s)) {
       throw new Error(`Unknown strategy slug: ${s}`);
     }
+  }
+
+  if (normalized.length === 0) {
+    await db.execute(
+      "DELETE FROM portfolio_systemtrader_strategies WHERE portfolio_id = ?",
+      [portfolioId]
+    );
+    return;
   }
 
   const currentRes = await db.execute(

@@ -661,16 +661,12 @@ export function startUiServer(): http.Server {
         const body = await parseBody(req);
         const raw = body.slugs;
         if (!Array.isArray(raw)) {
-          sendJson(res, 400, { error: "slugs must be a non-empty array" });
+          sendJson(res, 400, { error: "slugs must be an array" });
           return;
         }
         const slugs = raw
           .map((x) => (typeof x === "string" ? x.trim() : ""))
           .filter((s) => s.length > 0);
-        if (slugs.length === 0) {
-          sendJson(res, 400, { error: "slugs must be a non-empty array" });
-          return;
-        }
         const portfolios = await listPortfolios();
         if (!portfolios.some((p) => p.id === portfolioId)) {
           sendJson(res, 404, { error: "Portfolio not found" });

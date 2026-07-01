@@ -417,9 +417,6 @@ function StrategySignalCheckboxes({
       set.delete(slug);
     }
     const next = Array.from(set);
-    if (next.length === 0) {
-      return;
-    }
     onSlugsChange(portfolioId, next);
   };
 
