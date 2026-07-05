@@ -267,17 +267,9 @@ async function migratePortfolioSystemtraderStrategiesTable(
     );
   }
 
-  await db.execute(
-    `
-    INSERT INTO portfolio_systemtrader_strategies (portfolio_id, slug, last_processed_date, last_processed_timestamp)
-    SELECT p.id, ?, NULL, NULL
-    FROM portfolios p
-    WHERE NOT EXISTS (
-      SELECT 1 FROM portfolio_systemtrader_strategies s WHERE s.portfolio_id = p.id
-    )
-  `,
-    [DEFAULT_SYSTEMTRADER_SLUG]
-  );
+  // Note: intentionally removed the legacy re-seed migration that inserted
+  // a default strategy for portfolios with zero strategies. That conflicted
+  // with the ability to deselect all strategies (it re-inserted on every start).
 }
 
 async function hasOldCredentialsSchema(db: ReturnType<typeof getClient>): Promise<boolean> {
