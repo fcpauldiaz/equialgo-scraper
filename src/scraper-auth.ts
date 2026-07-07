@@ -58,7 +58,18 @@ export async function getBrowser(): Promise<Browser> {
   if (!browser) {
     const launchOptions: Parameters<typeof puppeteer.launch>[0] = {
       headless: HEADLESS,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--no-zygote",
+        "--single-process",
+        "--disable-software-rasterizer",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-dbus",
+      ],
     };
     if (EXECUTABLE_PATH) {
       launchOptions.executablePath = EXECUTABLE_PATH;
