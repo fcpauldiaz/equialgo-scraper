@@ -58,17 +58,20 @@ export async function getBrowser(): Promise<Browser> {
   if (!browser) {
     const launchOptions: Parameters<typeof puppeteer.launch>[0] = {
       headless: HEADLESS,
+      protocolTimeout: 60000,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
         "--disable-gpu",
-        "--no-zygote",
-        "--single-process",
         "--disable-software-rasterizer",
         "--disable-extensions",
         "--disable-background-networking",
-        "--disable-dbus",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-translate",
+        "--disable-features=IsolateOrigins,site-per-process,AudioServiceOutOfProcess",
+        "--disable-breakpad",
       ],
     };
     if (EXECUTABLE_PATH) {
