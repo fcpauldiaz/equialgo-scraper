@@ -23,9 +23,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Let Puppeteer download its own compatible Chrome for Headless Shell
-# This avoids version mismatches with system Chromium that cause crashes
+# Puppeteer downloads its own Chrome headless shell; store in /app so the
+# node user can access it at runtime (build runs as root, runtime as node)
 ENV PUPPETEER_HEADLESS=shell
+ENV PUPPETEER_CACHE_DIR=/app/.cache/puppeteer
 
 WORKDIR /app
 
@@ -49,7 +50,7 @@ RUN pnpm prune --prod
 
 EXPOSE 3000
 
-RUN chown -R node:node /app /root/.cache 2>/dev/null || true
+RUN chown -R node:node /app
 
 USER node
 
