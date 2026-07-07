@@ -1,9 +1,8 @@
 # EquiAlgo Alert Service - Docker image with Puppeteer (Chromium)
 FROM node:22-bookworm-slim
 
-# Install Chromium and runtime deps for headless Puppeteer (no bundled Chrome download)
+# Runtime deps for Puppeteer's bundled Chrome headless shell
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    chromium \
     fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -20,11 +19,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxdamage1 \
     libxrandr2 \
     xdg-utils \
+    ca-certificates \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Use system Chromium; skip Puppeteer's download to save space and avoid version mismatch
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+# Let Puppeteer download its own compatible Chrome for Headless Shell
+# This avoids version mismatches with system Chromium that cause crashes
+ENV PUPPETEER_HEADLESS=shell
 
 WORKDIR /app
 
@@ -33,7 +34,7 @@ RUN corepack enable && corepack prepare pnpm@10.28.0 --activate
 
 # Install dependencies (production + dev for build)
 COPY package.json pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile && npx puppeteer browsers install chrome-headless-shell
 
 # Build the app
 COPY tsconfig.json ./
@@ -48,9 +49,8 @@ RUN pnpm prune --prod
 
 EXPOSE 3000
 
-RUN chown -R node:node /app
+RUN chown -R node:node /app /root/.cache 2>/dev/null || true
 
-# Run as non-root if possible (Chromium may need specific permissions; use --cap-add=SYS_ADMIN if needed)
 USER node
 
 # Use --init in docker run so Puppeteer child processes are reaped (e.g. docker run --init ...)

@@ -2,7 +2,10 @@ import puppeteer, { type Browser, type ElementHandle, type Page } from "puppetee
 
 export const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || "3", 10);
 export const RETRY_DELAY_MS = parseInt(process.env.RETRY_DELAY_MS || "1000", 10);
-export const HEADLESS = process.env.PUPPETEER_HEADLESS !== "false";
+export const HEADLESS: boolean | "shell" =
+  process.env.PUPPETEER_HEADLESS === "false" ? false
+  : process.env.PUPPETEER_HEADLESS === "shell" ? "shell"
+  : "shell";
 export const EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 
 export const DEFAULT_USER_AGENT =
@@ -56,28 +59,23 @@ export async function sleep(ms: number): Promise<void> {
 
 export async function getBrowser(): Promise<Browser> {
   if (!browser) {
+    const args = [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+    ];
     const launchOptions: Parameters<typeof puppeteer.launch>[0] = {
-      headless: HEADLESS,
+      headless: HEADLESS as boolean,
       protocolTimeout: 60000,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--disable-software-rasterizer",
-        "--disable-extensions",
-        "--disable-background-networking",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-translate",
-        "--disable-features=IsolateOrigins,site-per-process,AudioServiceOutOfProcess",
-        "--disable-breakpad",
-      ],
+      args,
     };
     if (EXECUTABLE_PATH) {
       launchOptions.executablePath = EXECUTABLE_PATH;
     }
+    console.log(`[scraper] launching browser: headless=${HEADLESS} exec=${EXECUTABLE_PATH ?? "bundled"}`);
     browser = await puppeteer.launch(launchOptions);
+    console.log("[scraper] browser launched successfully");
   }
   return browser;
 }
